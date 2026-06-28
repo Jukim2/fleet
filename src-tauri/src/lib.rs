@@ -190,10 +190,12 @@ fn home_dir() -> Option<String> {
 }
 
 /// Claude Code stores transcripts under ~/.claude/projects/<encoded-cwd>/<uuid>.jsonl
-/// where the cwd is encoded by replacing "/" and "." with "-".
+/// where the cwd is encoded by replacing every character that isn't ASCII
+/// alphanumeric or `-` with `-` (per-character). This covers `/` and `.` on
+/// macOS/Linux as well as `\`, `:`, and spaces on Windows.
 fn encode_project_dir(cwd: &str) -> String {
     cwd.chars()
-        .map(|c| if c == '/' || c == '.' { '-' } else { c })
+        .map(|c| if c.is_ascii_alphanumeric() || c == '-' { c } else { '-' })
         .collect()
 }
 
@@ -236,10 +238,22 @@ fn list_claude_sessions(cwd: String) -> Vec<ClaudeSession> {
         Some(h) => h,
         None => return vec![],
     };
-    let dir = std::path::Path::new(&home)
-        .join(".claude")
-        .join("projects")
-        .join(encode_project_dir(&cwd));
+    // Resolve the project's transcript dir by matching the encoded name
+    // case-insensitively — Windows has a known drive-letter casing bug where the
+    // folder is created as `C--…` but looked up as `c--…`.
+    let projects_dir = std::path::Path::new(&home).join(".claude").join("projects");
+    let encoded = encode_project_dir(&cwd);
+    let dir = match std::fs::read_dir(&projects_dir) {
+        Ok(entries) => entries
+            .flatten()
+            .find(|e| e.file_name().to_string_lossy().eq_ignore_ascii_case(&encoded))
+            .map(|e| e.path()),
+        Err(_) => None,
+    };
+    let dir = match dir {
+        Some(d) => d,
+        None => return vec![],
+    };
 
     let entries = match std::fs::read_dir(&dir) {
         Ok(e) => e,
