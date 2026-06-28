@@ -121,7 +121,7 @@ fn write_pty(sessions: State<Sessions>, id: String, data: String) -> Result<(), 
     Ok(())
 }
 
-/// Inject a prompt line and submit it (used by blocks / queue / scheduler).
+/// Inject a prompt line and submit it (used by blocks / queue).
 #[tauri::command]
 fn send_prompt(sessions: State<Sessions>, id: String, text: String) -> Result<(), String> {
     let mut map = sessions.0.lock().unwrap();
@@ -262,7 +262,7 @@ fn list_claude_sessions(cwd: String) -> Vec<ClaudeSession> {
     sessions
 }
 
-// --- Config persistence (projects, blocks, queue, schedules) -------------
+// --- Config persistence (projects, blocks, queue) -------------
 
 fn config_path(app: &AppHandle) -> Result<std::path::PathBuf, String> {
     let dir = app.path().app_config_dir().map_err(|e| e.to_string())?;

@@ -32,6 +32,9 @@ export default function QueueBoard({
   board,
   taskStatus,
   blocks,
+  projects,
+  boards,
+  allTerminals,
   onClose,
   onAddLane,
   onRemoveLane,
@@ -39,8 +42,10 @@ export default function QueueBoard({
   onRemoveTask,
   onSetDeps,
   onAddBlock,
-  onToggleRunning,
-  onReset,
+  onToggleRunningProject,
+  onResetProject,
+  onOpenProject,
+  onAddProject,
 }: {
   project: Project;
   terminals: Terminal[];
@@ -48,6 +53,9 @@ export default function QueueBoard({
   board: Board;
   taskStatus: Record<string, TaskStatus>;
   blocks: Block[];
+  projects: Project[];
+  boards: Record<string, Board>;
+  allTerminals: Terminal[];
   onClose: () => void;
   onAddLane: (termId: string) => void;
   onRemoveLane: (termId: string) => void;
@@ -55,9 +63,12 @@ export default function QueueBoard({
   onRemoveTask: (taskId: string) => void;
   onSetDeps: (taskId: string, deps: string[]) => void;
   onAddBlock: (text: string) => void;
-  onToggleRunning: () => void;
-  onReset: () => void;
+  onToggleRunningProject: (projectId: string) => void;
+  onResetProject: (projectId: string) => void;
+  onOpenProject: (projectId: string) => void;
+  onAddProject: () => Promise<boolean>;
 }) {
+  const [mode, setMode] = useState<"project" | "overview">("project");
   const bodyRef = useRef<HTMLDivElement>(null); // non-scrolling overlay parent (arrow origin)
   const scrollRef = useRef<HTMLDivElement>(null); // the horizontally-scrolling lane strip
   const cardRefs = useRef<Record<string, HTMLDivElement | null>>({});
@@ -158,31 +169,67 @@ export default function QueueBoard({
         <header className="qb-head">
           <div className="qb-title">
             <strong>큐 보드</strong>
-            <span className="qb-proj">{project.name}</span>
-            {board.tasks.length > 0 && (
+            <div className="qb-modes">
+              <button className={mode === "project" ? "on" : ""} onClick={() => setMode("project")}>
+                이 프로젝트
+              </button>
+              <button
+                className={mode === "overview" ? "on" : ""}
+                onClick={() => setMode("overview")}
+              >
+                전체
+              </button>
+            </div>
+            {mode === "project" && <span className="qb-proj">{project.name}</span>}
+            {mode === "project" && board.tasks.length > 0 && (
               <span className="qb-count">
                 {done}/{board.tasks.length} 완료
               </span>
             )}
           </div>
           <div className="qb-actions">
-            <button
-              className={`qb-run ${board.running ? "on" : ""}`}
-              onClick={onToggleRunning}
-              disabled={board.tasks.length === 0}
-            >
-              {board.running ? "■ 정지" : "▶ 실행"}
-            </button>
-            <button className="qb-btn" onClick={onReset} disabled={done === 0 && !board.running}>
-              초기화
-            </button>
+            {mode === "project" && (
+              <>
+                <button
+                  className={`qb-run ${board.running ? "on" : ""}`}
+                  onClick={() => onToggleRunningProject(project.id)}
+                  disabled={board.tasks.length === 0}
+                >
+                  {board.running ? "■ 정지" : "▶ 실행"}
+                </button>
+                <button
+                  className="qb-btn"
+                  onClick={() => onResetProject(project.id)}
+                  disabled={done === 0 && !board.running}
+                >
+                  초기화
+                </button>
+              </>
+            )}
             <button className="qb-x" onClick={onClose} title="닫기">
               ✕
             </button>
           </div>
         </header>
 
-        <div className="qb-body" ref={bodyRef}>
+        {mode === "overview" ? (
+          <Overview
+            projects={projects}
+            boards={boards}
+            terminals={allTerminals}
+            taskStatus={taskStatus}
+            onToggleRunning={onToggleRunningProject}
+            onReset={onResetProject}
+            onOpen={(pid) => {
+              onOpenProject(pid);
+              setMode("project");
+            }}
+            onAddProject={async () => {
+              if (await onAddProject()) setMode("project"); // new project becomes active → enter it
+            }}
+          />
+        ) : (
+          <div className="qb-body" ref={bodyRef}>
           <svg className="qb-arrows">
             <defs>
               <marker
@@ -249,6 +296,7 @@ export default function QueueBoard({
             )}
           </div>
         </div>
+        )}
       </div>
 
       {picker && (
@@ -262,6 +310,119 @@ export default function QueueBoard({
           onClose={() => setPicker(null)}
         />
       )}
+    </div>
+  );
+}
+
+/** All-projects monitor: per-project progress, running state, and lane breakdown. */
+function Overview({
+  projects,
+  boards,
+  terminals,
+  taskStatus,
+  onToggleRunning,
+  onReset,
+  onOpen,
+  onAddProject,
+}: {
+  projects: Project[];
+  boards: Record<string, Board>;
+  terminals: Terminal[];
+  taskStatus: Record<string, TaskStatus>;
+  onToggleRunning: (projectId: string) => void;
+  onReset: (projectId: string) => void;
+  onOpen: (projectId: string) => void;
+  onAddProject: () => void;
+}) {
+  const termsById = useMemo(() => Object.fromEntries(terminals.map((t) => [t.id, t])), [terminals]);
+
+  return (
+    <div className="qb-overview">
+      {projects.map((p) => {
+        const board = boards[p.id] ?? { running: false, lanes: [], tasks: [] };
+        const total = board.tasks.length;
+        const done = board.tasks.filter((t) => taskStatus[t.id] === "done").length;
+        const pct = total ? Math.round((done / total) * 100) : 0;
+        const allDone = total > 0 && done === total;
+        return (
+          <div key={p.id} className="qb-ov-card">
+            <div className="qb-ov-top">
+              <strong className="qb-ov-name" title={p.path}>
+                {p.name}
+              </strong>
+              {board.running ? (
+                <span className="qb-ov-badge run">실행중</span>
+              ) : allDone ? (
+                <span className="qb-ov-badge done">완료</span>
+              ) : null}
+              {total > 0 && (
+                <span className="qb-ov-count">
+                  {done}/{total}
+                </span>
+              )}
+            </div>
+
+            {total > 0 ? (
+              <>
+                <div className="qb-ov-bar">
+                  <div
+                    className={`qb-ov-fill ${allDone ? "done" : ""}`}
+                    style={{ width: `${pct}%` }}
+                  />
+                </div>
+                <div className="qb-ov-lanes">
+                  {board.lanes.map((termId) => {
+                    const laneTasks = board.tasks.filter((t) => t.laneTermId === termId);
+                    if (laneTasks.length === 0) return null;
+                    const running = laneTasks.find((t) => taskStatus[t.id] === "running");
+                    const ld = laneTasks.filter((t) => taskStatus[t.id] === "done").length;
+                    const state = running ? "running" : ld === laneTasks.length ? "done" : "pending";
+                    return (
+                      <div key={termId} className="qb-ov-lane">
+                        <span className={`qb-tstat ${state}`} />
+                        <span className="qb-ov-lname">{termsById[termId]?.title ?? "?"}</span>
+                        <span className="qb-ov-ltask">
+                          {running ? running.text : `${ld}/${laneTasks.length}`}
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+              </>
+            ) : (
+              <p className="qb-ov-empty">큐 없음 — 열어서 작업을 추가하세요.</p>
+            )}
+
+            <div className="qb-ov-actions">
+              {total > 0 && (
+                <>
+                  <button
+                    className={`qb-run ${board.running ? "on" : ""}`}
+                    onClick={() => onToggleRunning(p.id)}
+                  >
+                    {board.running ? "■ 정지" : "▶ 실행"}
+                  </button>
+                  <button
+                    className="qb-btn"
+                    onClick={() => onReset(p.id)}
+                    disabled={done === 0 && !board.running}
+                  >
+                    초기화
+                  </button>
+                </>
+              )}
+              <button className="qb-btn" onClick={() => onOpen(p.id)}>
+                열기 →
+              </button>
+            </div>
+          </div>
+        );
+      })}
+
+      <button className="qb-ov-add" onClick={onAddProject}>
+        <span className="qb-ov-add-plus">＋</span>
+        새 프로젝트
+      </button>
     </div>
   );
 }

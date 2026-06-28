@@ -46,20 +46,6 @@ export type QueueBoard = {
 /** Live run state of a board task (absent = pending). */
 export type TaskStatus = "running" | "done";
 
-/** A scheduled run of a block against a project. */
-export type Schedule = {
-  id: string;
-  projectId: string;
-  blockId: string;
-  kind: "interval" | "daily";
-  intervalMin: number;
-  time: string; // "HH:MM"
-  action: "send" | "enqueue";
-  enabled: boolean;
-  lastRun?: number;
-  lastDay?: string;
-};
-
 /** Recursive split layout. A leaf shows one terminal; a split holds two children. */
 export type Leaf = { kind: "leaf"; id: string; termId: string | null };
 export type Split = {
@@ -80,7 +66,6 @@ export type FleetConfig = {
   blocks: Block[];
   /** projectId -> queue board */
   boards: Record<string, QueueBoard>;
-  schedules: Schedule[];
 };
 
 /** Live, non-persisted status of a terminal. */
@@ -99,5 +84,4 @@ export const emptyConfig: FleetConfig = {
   layouts: {},
   blocks: [],
   boards: {},
-  schedules: [],
 };

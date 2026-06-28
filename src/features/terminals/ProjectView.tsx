@@ -77,7 +77,7 @@ export default function ProjectView({
   onMovePane: (sourcePaneId: string, targetPaneId: string, zone: Zone) => void;
   onStatus: (id: string, status: TermStatus) => void;
   onOpenPalette: () => void;
-  onOpenDrawer: (section: "blocks" | "queue" | "schedule") => void;
+  onOpenDrawer: (section: "blocks" | "queue") => void;
 }) {
   const stageRef = useRef<HTMLDivElement>(null);
   const [panes, setPanes] = useState<PaneRect[]>([]);
@@ -233,9 +233,6 @@ export default function ProjectView({
           </button>
           <button className="tool" onClick={() => onOpenDrawer("queue")} title="큐">
             큐
-          </button>
-          <button className="tool" onClick={() => onOpenDrawer("schedule")} title="예약">
-            예약
           </button>
           <NewTerminalMenu onCreate={onNewTerm} />
         </div>

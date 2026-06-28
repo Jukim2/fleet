@@ -7,13 +7,10 @@ import Drawer from "./features/drawer/Drawer";
 import QueueBoard from "./features/board/QueueBoard";
 import { useFleet } from "./hooks/useFleet";
 
-type DrawerSection = "blocks" | "schedule";
-
 export default function App() {
   const f = useFleet();
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [drawerOpen, setDrawerOpen] = useState(false);
-  const [drawerSection, setDrawerSection] = useState<DrawerSection>("blocks");
   const [boardOpen, setBoardOpen] = useState(false);
 
   // Keep the latest store in a ref so the global key handler stays subscription-stable.
@@ -47,17 +44,20 @@ export default function App() {
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
-  const pickFolder = async () => {
+  const pickFolder = async (): Promise<boolean> => {
     const picked = await open({ directory: true, multiple: false, title: "프로젝트 폴더 선택" });
-    if (picked && typeof picked === "string") f.addProject(picked);
+    if (picked && typeof picked === "string") {
+      f.addProject(picked);
+      return true;
+    }
+    return false;
   };
 
-  const openDrawer = (section: "blocks" | "queue" | "schedule") => {
+  const openDrawer = (section: "blocks" | "queue") => {
     if (section === "queue") {
       setBoardOpen(true);
       return;
     }
-    setDrawerSection(section);
     setDrawerOpen(true);
   };
 
@@ -127,14 +127,9 @@ export default function App() {
 
       <Drawer
         open={drawerOpen}
-        section={drawerSection}
-        setSection={setDrawerSection}
         onClose={() => setDrawerOpen(false)}
         blocks={f.config.blocks}
         onChangeBlocks={f.setBlocks}
-        projects={f.config.projects}
-        schedules={f.config.schedules}
-        onChangeSchedules={f.setSchedules}
       />
 
       {boardOpen && activeProject && activeBoard && (
@@ -145,6 +140,9 @@ export default function App() {
           board={activeBoard}
           taskStatus={f.taskStatus}
           blocks={f.config.blocks}
+          projects={f.config.projects}
+          boards={f.config.boards}
+          allTerminals={f.config.terminals}
           onClose={() => setBoardOpen(false)}
           onAddLane={(tid) => f.addLane(activeProject.id, tid)}
           onRemoveLane={(tid) => f.removeLane(activeProject.id, tid)}
@@ -154,8 +152,10 @@ export default function App() {
           onAddBlock={(text) =>
             f.setBlocks([...f.config.blocks, { id: crypto.randomUUID(), name: text.slice(0, 24), text }])
           }
-          onToggleRunning={() => f.toggleBoardRunning(activeProject.id)}
-          onReset={() => f.resetBoard(activeProject.id)}
+          onToggleRunningProject={f.toggleBoardRunning}
+          onResetProject={f.resetBoard}
+          onOpenProject={f.selectProject}
+          onAddProject={pickFolder}
         />
       )}
 

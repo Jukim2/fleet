@@ -21,7 +21,6 @@ import {
   Project,
   QueueBoard,
   QueueTask,
-  Schedule,
   TaskStatus,
   Terminal,
   TermStatus,
@@ -208,9 +207,10 @@ export function useFleet() {
     });
 
   // --- terminals ---
-  const newTerm = (projectId: string, startup: string, baseTitle: string) => {
+  const newTerm = (projectId: string, startup: string, baseTitle: string, exactTitle?: string) => {
     const n = config.terminals.filter((t) => t.projectId === projectId).length + 1;
-    const term: Terminal = { id: uid(), projectId, title: `${baseTitle} ${n}`, startup };
+    const title = exactTitle ?? `${baseTitle} ${n}`;
+    const term: Terminal = { id: uid(), projectId, title, startup };
     const focus = focusOf(projectId);
     if (focus) {
       patchLayout(projectId, (lay) => (lay ? setLeafTerm(lay, focus, term.id) : newLeaf(term.id)));
@@ -404,12 +404,6 @@ export function useFleet() {
     setBoardRunning(projectId, false);
   };
 
-  /** Used by the scheduler's "enqueue" action: append a task to a terminal's lane. */
-  const enqueue = (termId: string, text: string) => {
-    const term = configRef.current.terminals.find((t) => t.id === termId);
-    if (term) addTask(term.projectId, termId, text);
-  };
-
   const dispatchTask = (termId: string, task: QueueTask) => {
     sendPrompt(termId, task.text);
     awaiting.current[termId] = true;
@@ -457,48 +451,13 @@ export function useFleet() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // --- scheduler ---
-  const setSchedules = (schedules: Schedule[]) => setConfig((c) => ({ ...c, schedules }));
-  const fireSchedule = (s: Schedule) => {
-    const cfg = configRef.current;
-    const block = cfg.blocks.find((b) => b.id === s.blockId);
-    const term = cfg.terminals.find((t) => t.projectId === s.projectId);
-    if (!block || !term) return;
-    if (s.action === "enqueue") enqueue(term.id, block.text);
-    else sendPrompt(term.id, block.text);
-  };
-  useEffect(() => {
-    const pad = (n: number) => String(n).padStart(2, "0");
-    const timer = window.setInterval(() => {
-      const now = Date.now();
-      const d = new Date();
-      const hhmm = `${pad(d.getHours())}:${pad(d.getMinutes())}`;
-      const today = `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`;
-      const list = configRef.current.schedules;
-      let changed = false;
-      const next = list.map((s) => {
-        if (!s.enabled) return s;
-        if (s.kind === "interval") {
-          if (now - (s.lastRun ?? 0) >= s.intervalMin * 60000) {
-            fireSchedule(s);
-            changed = true;
-            return { ...s, lastRun: now };
-          }
-        } else if (hhmm === s.time && s.lastDay !== today) {
-          fireSchedule(s);
-          changed = true;
-          return { ...s, lastDay: today };
-        }
-        return s;
-      });
-      if (changed) setConfig((c) => ({ ...c, schedules: next }));
-    }, 20000);
-    return () => window.clearInterval(timer);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
   const resume = (s: ClaudeSession) => {
-    if (activeProjectId) newTerm(activeProjectId, `claude --resume ${s.id}`, "Claude ↺");
+    if (!activeProjectId) return;
+    // Carry the original session's identity over: name the resumed terminal after
+    // its summary (first user message) instead of a fresh "Claude ↺ N" counter.
+    const label = s.summary.replace(/\s+/g, " ").trim().slice(0, 24);
+    const title = label || "Claude ↺";
+    newTerm(activeProjectId, `claude --resume ${s.id}`, "Claude ↺", title);
   };
 
   const liveByProject = useMemo(() => {
@@ -549,7 +508,6 @@ export function useFleet() {
     setTaskDeps,
     toggleBoardRunning,
     resetBoard,
-    setSchedules,
     resume,
   };
 }
