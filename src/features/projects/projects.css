@@ -1,0 +1,157 @@
+.rail {
+  background: var(--rail);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  padding: 14px 10px;
+  gap: 4px;
+  min-height: 0;
+}
+.rail-head {
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  padding: 2px 8px 12px;
+}
+.rail-list {
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 45%;
+}
+.rail-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 8px;
+  border-radius: 8px;
+  color: var(--muted);
+  user-select: none;
+}
+.rail-item:hover {
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text);
+}
+.rail-item.active {
+  background: rgba(167, 139, 250, 0.14);
+  color: var(--text);
+}
+.folder {
+  font-size: 10px;
+  opacity: 0.7;
+}
+.rail-name {
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.rail-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--green);
+  flex-shrink: 0;
+}
+.rail-x {
+  background: none;
+  border: none;
+  color: var(--muted);
+  opacity: 0;
+  font-size: 11px;
+  padding: 0 2px;
+}
+.rail-item:hover .rail-x {
+  opacity: 0.6;
+}
+.rail-x:hover {
+  opacity: 1;
+}
+.rail-add {
+  background: none;
+  border: 1px dashed var(--border);
+  color: var(--muted);
+  border-radius: 8px;
+  padding: 8px;
+  font-size: 13px;
+}
+.rail-add:hover {
+  border-color: var(--accent);
+  color: var(--text);
+}
+
+/* Sessions panel */
+.sessions {
+  margin-top: 10px;
+  border-top: 1px solid var(--border);
+  padding-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-height: 0;
+  min-width: 0;
+  flex: 1;
+}
+.sessions-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 11px;
+  color: var(--muted);
+  padding: 0 4px;
+}
+.icon-btn {
+  background: none;
+  border: none;
+  color: var(--muted);
+  font-size: 13px;
+  padding: 0 4px;
+}
+.icon-btn:hover {
+  color: var(--text);
+}
+.sessions-list {
+  overflow-y: auto;
+  overflow-x: hidden;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+.sessions-empty {
+  font-size: 12px;
+  color: var(--muted);
+  padding: 8px 4px;
+}
+.session {
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  padding: 6px 8px;
+  text-align: left;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  color: var(--text);
+  min-width: 0;
+  overflow: hidden;
+  width: 100%;
+}
+.session:hover {
+  background: rgba(167, 139, 250, 0.14);
+  border-color: var(--border);
+}
+.session-summary {
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+  min-width: 0;
+}
+.session-time {
+  font-size: 10px;
+  color: var(--muted);
+}

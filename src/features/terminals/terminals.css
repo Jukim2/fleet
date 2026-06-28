@@ -1,0 +1,312 @@
+/* ---- Project view ---- */
+.pv {
+  position: absolute;
+  inset: 0;
+  flex-direction: column;
+}
+.pv-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px 8px;
+}
+.pv-title {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  min-width: 0;
+}
+.pv-title strong {
+  font-size: 15px;
+}
+.pv-path {
+  font-size: 11px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.pv-tools {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+.tool {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  color: var(--muted);
+  border-radius: 8px;
+  padding: 6px 10px;
+  font-size: 12px;
+}
+.tool:hover {
+  border-color: var(--accent);
+  color: var(--text);
+}
+
+/* new terminal menu */
+.newterm {
+  position: relative;
+  flex-shrink: 0;
+}
+.newterm-btn {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 8px;
+  padding: 6px 12px;
+  font-size: 13px;
+}
+.newterm-btn:hover {
+  border-color: var(--accent);
+}
+.menu {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 6px);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 5px;
+  min-width: 180px;
+  z-index: 100;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.menu > button {
+  background: none;
+  border: none;
+  color: var(--text);
+  text-align: left;
+  padding: 8px 10px;
+  border-radius: 7px;
+  font-size: 13px;
+}
+.menu > button:hover {
+  background: rgba(167, 139, 250, 0.16);
+}
+
+/* ---- Tabs ---- */
+.tabs {
+  display: flex;
+  gap: 2px;
+  padding: 0 14px;
+  overflow-x: auto;
+}
+.tab {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 11px;
+  border-radius: 8px;
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+  user-select: none;
+  border: 1px solid transparent;
+}
+.tab:hover {
+  color: var(--text);
+}
+.tab.shown {
+  background: var(--surface);
+  color: var(--text);
+  border-color: var(--border);
+}
+.tab-title {
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.tab-edit {
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--accent);
+  border-radius: 5px;
+  font-size: 12px;
+  padding: 1px 5px;
+  width: 110px;
+  outline: none;
+}
+.tdot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #4b4b52;
+  flex-shrink: 0;
+}
+.tdot.busy {
+  background: var(--amber);
+}
+.tdot.idle {
+  background: var(--green);
+}
+.tab-x {
+  background: none;
+  border: none;
+  color: var(--muted);
+  font-size: 11px;
+  padding: 0;
+  opacity: 0.5;
+}
+.tab-x:hover {
+  opacity: 1;
+}
+
+/* ---- Stage / splits ---- */
+.stage {
+  position: relative;
+  flex: 1;
+  margin: 8px 14px 14px;
+  min-height: 0;
+}
+.splitroot {
+  position: absolute;
+  inset: 0;
+  display: flex;
+}
+.split {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+}
+.split.split-row {
+  flex-direction: row;
+}
+.split.split-col {
+  flex-direction: column;
+}
+.split-cell {
+  flex-basis: 0;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+}
+.divider {
+  flex: 0 0 6px;
+  background: transparent;
+}
+.divider:hover,
+body.resizing .divider {
+  background: var(--accent);
+  opacity: 0.5;
+}
+.divider.divider-row {
+  cursor: col-resize;
+}
+.divider.divider-col {
+  cursor: row-resize;
+}
+
+/* panes */
+.pane {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+  background: #101014;
+}
+.pane.focused {
+  border-color: var(--accent);
+}
+.pane-bar {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 8px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+  flex-shrink: 0;
+  position: relative;
+  z-index: 6; /* keep split/close buttons above the floating terminal (z 5) */
+}
+.pane-bar.draggable {
+  cursor: grab;
+}
+.pane-bar.draggable:active {
+  cursor: grabbing;
+}
+.pane-name {
+  flex: 1;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.pane-tools {
+  display: flex;
+  gap: 2px;
+}
+.pane-tools button {
+  background: none;
+  border: none;
+  color: var(--muted);
+  font-size: 13px;
+  padding: 0 3px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.pane-tools button:hover {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.07);
+}
+.pane-body {
+  flex: 1;
+  position: relative;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.stage-empty {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 13px;
+}
+.stage-empty-sub {
+  font-size: 12px;
+  opacity: 0.7;
+}
+
+/* floating persistent terminals */
+.term-float {
+  position: absolute;
+  z-index: 5;
+  overflow: hidden;
+  background: #101014;
+}
+.term-host {
+  height: 100%;
+  padding: 6px 8px;
+}
+
+.drop-catcher {
+  position: absolute;
+  inset: 0;
+  z-index: 50;
+  background: rgba(167, 139, 250, 0.04);
+}
+.drop-hint {
+  position: absolute;
+  z-index: 51;
+  background: rgba(167, 139, 250, 0.28);
+  border: 2px solid var(--accent);
+  border-radius: 8px;
+  pointer-events: none;
+  transition: all 0.08s ease;
+}
