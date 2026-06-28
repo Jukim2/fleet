@@ -68,8 +68,9 @@ export type FleetConfig = {
   boards: Record<string, QueueBoard>;
 };
 
-/** Live, non-persisted status of a terminal. */
-export type TermStatus = "stopped" | "busy" | "idle";
+/** Live, non-persisted status of a terminal.
+ *  "waiting" = Claude is blocked on a permission/input prompt (needs you). */
+export type TermStatus = "stopped" | "busy" | "idle" | "waiting";
 
 /** A past claude session discoverable for resume. */
 export type ClaudeSession = {

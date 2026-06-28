@@ -8,6 +8,9 @@
   min-height: 0;
 }
 .rail-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
   font-size: 13px;
   font-weight: 700;
   letter-spacing: 0.04em;

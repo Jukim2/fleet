@@ -5,6 +5,9 @@ import ProjectView from "./features/terminals/ProjectView";
 import CommandPalette from "./features/blocks/CommandPalette";
 import Drawer from "./features/drawer/Drawer";
 import QueueBoard from "./features/board/QueueBoard";
+import SettingsPanel from "./features/settings/SettingsPanel";
+import { ensureHookInstalled } from "./api/pty";
+import { checkForUpdate, UpdateAvailable } from "./api/system";
 import { useFleet } from "./hooks/useFleet";
 
 export default function App() {
@@ -12,6 +15,13 @@ export default function App() {
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [boardOpen, setBoardOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [launchUpdate, setLaunchUpdate] = useState<UpdateAvailable | null>(null);
+
+  // One-shot update check on launch; surfaces a pill if a new version is out.
+  useEffect(() => {
+    checkForUpdate().then(setLaunchUpdate).catch(() => {});
+  }, []);
 
   // Keep the latest store in a ref so the global key handler stays subscription-stable.
   const fRef = useRef(f);
@@ -53,6 +63,11 @@ export default function App() {
     return false;
   };
 
+  const relinkProject = async (projectId: string) => {
+    const picked = await open({ directory: true, multiple: false, title: "폴더 다시 연결" });
+    if (picked && typeof picked === "string") f.relinkProject(projectId, picked);
+  };
+
   const openDrawer = (section: "blocks" | "queue") => {
     if (section === "queue") {
       setBoardOpen(true);
@@ -80,6 +95,7 @@ export default function App() {
         onReorder={f.reorderProjects}
         onRefreshSessions={f.refreshSessions}
         onResume={f.resume}
+        onOpenSettings={() => setSettingsOpen(true)}
       />
 
       <main className="stage-wrap">
@@ -167,6 +183,21 @@ export default function App() {
         onSend={f.sendBlock}
         onBroadcast={f.broadcastBlock}
       />
+
+      {settingsOpen && (
+        <SettingsPanel
+          onClose={() => setSettingsOpen(false)}
+          projects={f.config.projects}
+          onRelink={relinkProject}
+          onReinstallHooks={ensureHookInstalled}
+        />
+      )}
+
+      {launchUpdate && !settingsOpen && (
+        <button className="update-pill" onClick={() => setSettingsOpen(true)}>
+          새 버전 <b>v{launchUpdate.version}</b> 사용 가능 · 설치
+        </button>
+      )}
     </div>
   );
 }

@@ -1,5 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { killSession, sendPrompt } from "../api/pty";
+import { listen } from "@tauri-apps/api/event";
+import {
+  isPermissionGranted,
+  requestPermission,
+  sendNotification,
+} from "@tauri-apps/plugin-notification";
+import { ensureHookInstalled, HookEvent, killSession, sendPrompt } from "../api/pty";
 import { loadConfig, saveConfig } from "../api/config";
 import {
   compact,
@@ -83,6 +89,10 @@ export function useFleet() {
   const statusesRef = useRef(statuses);
   statusesRef.current = statuses;
   const awaiting = useRef<Record<string, boolean>>({});
+  /** terminals whose status is driven by live Claude Code hooks (not screen-scan) */
+  const hookDriven = useRef<Record<string, boolean>>({});
+  /** whether OS notification permission was granted (set once on mount) */
+  const notifyGranted = useRef(false);
   /** which board task each terminal is currently running (termId -> taskId) */
   const activeTask = useRef<Record<string, string>>({});
   /** authoritative mirror of taskStatus the 1s runner reads (kept in sync below) */
@@ -129,6 +139,10 @@ export function useFleet() {
 
   // --- helpers ---
   const setStatus = (id: string, status: TermStatus) => {
+    // Once Claude Code hooks are proven live for a terminal they're
+    // authoritative; ignore the screen-scan heuristic (but always honor a real
+    // PTY exit → "stopped").
+    if (hookDriven.current[id] && status !== "stopped") return;
     if (status === "busy") awaiting.current[id] = false;
     setStatuses((s) => ({ ...s, [id]: status }));
   };
@@ -194,6 +208,15 @@ export function useFleet() {
       setActiveProjectId(next);
       if (next) setVisited((v) => ({ ...v, [next]: true }));
     }
+  };
+  /** Point an existing project at a new folder (e.g. after it moved/renamed).
+   *  Only affects terminals spawned afterwards — running PTYs keep their cwd. */
+  const relinkProject = (id: string, newPath: string) => {
+    const name = newPath.split(/[\\/]/).filter(Boolean).pop() || newPath;
+    setConfig((c) => ({
+      ...c,
+      projects: c.projects.map((p) => (p.id === id ? { ...p, path: newPath, name } : p)),
+    }));
   };
   const reorderProjects = (fromId: string, toId: string) =>
     setConfig((c) => {
@@ -414,6 +437,62 @@ export function useFleet() {
     }, 6000);
   };
 
+  // --- Claude Code hook bridge ---
+  // Install hooks + ask for notification permission once, then listen for the
+  // events the Rust bridge re-emits. These authoritatively drive busy/idle and,
+  // crucially, distinguish "waiting on a permission prompt" from "done".
+  const notify = (title: string, body: string) => {
+    if (!notifyGranted.current) return;
+    try {
+      sendNotification({ title, body });
+    } catch {
+      /* notifications unavailable */
+    }
+  };
+
+  const onHookEvent = (h: HookEvent) => {
+    const { termId, event, notificationType } = h;
+    let status: TermStatus | null = null;
+    if (event === "UserPromptSubmit" || event === "PreToolUse") status = "busy";
+    else if (notificationType === "permission_prompt") status = "waiting";
+    else if (notificationType === "idle_prompt") status = "idle";
+    else if (event === "Stop" || event === "StopFailure") status = "idle";
+    if (!status) return;
+
+    hookDriven.current[termId] = true;
+    if (status === "busy") awaiting.current[termId] = false;
+    setStatuses((s) => (s[termId] === status ? s : { ...s, [termId]: status }));
+
+    const cfg = configRef.current;
+    const term = cfg.terminals.find((t) => t.id === termId);
+    const project = term && cfg.projects.find((p) => p.id === term.projectId);
+    const where = [project?.name, term?.title].filter(Boolean).join(" · ") || "Claude";
+    if (status === "waiting") {
+      notify("승인 필요", `${where} — 권한 승인을 기다리고 있어요`);
+    } else if (status === "idle" && (event === "Stop" || event === "StopFailure")) {
+      // Always ping on completion, even if you're looking right at it.
+      notify("작업 완료", `${where} — 응답이 끝났어요`);
+    }
+  };
+
+  useEffect(() => {
+    ensureHookInstalled().catch(() => {});
+    (async () => {
+      try {
+        let granted = await isPermissionGranted();
+        if (!granted) granted = (await requestPermission()) === "granted";
+        notifyGranted.current = granted;
+      } catch {
+        /* no notification backend */
+      }
+    })();
+    const un = listen<HookEvent>("hook-event", (e) => onHookEvent(e.payload));
+    return () => {
+      un.then((f) => f());
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // Board runner: for each running board, advance every lane independently.
   // A lane's head task fires once its deps are all `done` and its terminal is idle,
   // so dep-free lanes run in parallel and dep chains run in order.
@@ -485,6 +564,7 @@ export function useFleet() {
     selectProject,
     addProject,
     removeProject,
+    relinkProject,
     reorderProjects,
     newTerm,
     activateTerm,

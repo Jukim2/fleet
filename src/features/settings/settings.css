@@ -1,0 +1,226 @@
+.settings-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 60;
+}
+.settings-panel {
+  width: min(680px, 92vw);
+  max-height: 86vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  overflow: hidden;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+}
+.settings-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--border);
+  font-weight: 600;
+  color: var(--text);
+}
+.settings-body {
+  overflow-y: auto;
+  padding: 8px 16px 20px;
+}
+.settings-sec {
+  padding: 14px 0;
+  border-bottom: 1px solid var(--border);
+}
+.settings-sec:last-child {
+  border-bottom: none;
+}
+.settings-sec h3 {
+  margin: 0 0 10px;
+  font-size: 13px;
+  color: var(--muted);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.set-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 5px 0;
+  font-size: 13px;
+}
+.set-key {
+  color: var(--muted);
+  flex-shrink: 0;
+  width: 84px;
+}
+.set-val {
+  color: var(--text);
+  flex: 1;
+  word-break: break-all;
+}
+.mono {
+  font-family: "SF Mono", Menlo, Monaco, monospace;
+  font-size: 12px;
+}
+.set-muted {
+  color: var(--muted);
+}
+.set-note {
+  margin: 8px 0 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+.set-err {
+  margin-top: 8px;
+  font-size: 12px;
+  color: #f87171;
+  word-break: break-all;
+}
+.ok {
+  color: var(--green);
+}
+.warn {
+  color: var(--amber);
+}
+.sm {
+  font-size: 12px;
+}
+
+.btn {
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  padding: 6px 12px;
+  cursor: pointer;
+  font-size: 13px;
+}
+.btn:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+.btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.btn.sm {
+  padding: 4px 9px;
+}
+.settings-panel .primary {
+  background: var(--accent);
+  color: #15121f;
+  border: none;
+  border-radius: 7px;
+  padding: 8px 14px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.upd-box {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  padding: 12px;
+  margin-top: 4px;
+}
+.upd-line {
+  font-size: 13px;
+  color: var(--text);
+  margin-bottom: 8px;
+}
+.upd-notes {
+  white-space: pre-wrap;
+  font-size: 12px;
+  color: var(--muted);
+  max-height: 120px;
+  overflow-y: auto;
+  margin: 0 0 10px;
+}
+.upd-progress {
+  font-size: 13px;
+  color: var(--text);
+}
+.upd-bar {
+  margin-top: 6px;
+  height: 6px;
+  background: var(--border);
+  border-radius: 3px;
+  overflow: hidden;
+}
+.upd-bar-fill {
+  height: 100%;
+  background: var(--accent);
+  transition: width 0.2s ease;
+}
+
+.set-proj {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 0;
+}
+.set-proj-main {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex: 1;
+}
+.set-proj-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--muted);
+  flex-shrink: 0;
+}
+.set-proj-dot.ok {
+  background: var(--green);
+}
+.set-proj-dot.warn {
+  background: var(--amber);
+}
+.set-proj-name {
+  color: var(--text);
+  font-size: 13px;
+  flex-shrink: 0;
+}
+.set-proj-path {
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+.set-proj-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+/* launch update pill */
+.update-pill {
+  position: fixed;
+  left: 16px;
+  bottom: 16px;
+  z-index: 55;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: var(--surface);
+  border: 1px solid var(--accent);
+  border-radius: 999px;
+  padding: 8px 14px;
+  font-size: 13px;
+  color: var(--text);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  cursor: pointer;
+}
+.update-pill b {
+  color: var(--accent);
+}

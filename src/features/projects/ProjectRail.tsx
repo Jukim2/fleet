@@ -21,6 +21,7 @@ export default function ProjectRail({
   onReorder,
   onRefreshSessions,
   onResume,
+  onOpenSettings,
 }: {
   projects: Project[];
   activeId: string | null;
@@ -33,10 +34,16 @@ export default function ProjectRail({
   onReorder: (fromId: string, toId: string) => void;
   onRefreshSessions: () => void;
   onResume: (s: ClaudeSession) => void;
+  onOpenSettings: () => void;
 }) {
   return (
     <nav className="rail">
-      <div className="rail-head">Fleet</div>
+      <div className="rail-head">
+        <span>Fleet</span>
+        <button className="icon-btn" title="설정 · 진단" onClick={onOpenSettings}>
+          ⚙
+        </button>
+      </div>
 
       <div className="rail-list">
         {projects.map((p) => (
