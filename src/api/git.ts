@@ -25,4 +25,9 @@ export const wtMergeContinue = (integDir: string) =>
 export const wtRemove = (cwd: string, dir: string) => invoke<void>("wt_remove", { cwd, dir });
 
 export const wtFinalize = (cwd: string, integDir: string, branch: string, message: string) =>
-  invoke<{ status: "ok" | "dirty" | "conflict" }>("wt_finalize", { cwd, integDir, branch, message });
+  invoke<{ status: "ok" | "conflict" | "restore_dirty" | "stash_failed" }>("wt_finalize", {
+    cwd,
+    integDir,
+    branch,
+    message,
+  });

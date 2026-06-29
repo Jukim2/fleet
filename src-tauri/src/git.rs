@@ -208,8 +208,16 @@ pub fn wt_remove(cwd: String, dir: String) -> Result<(), String> {
 
 /// Final merge: bring the integration branch into the branch currently checked
 /// out in the main working tree, then clean up the integration worktree.
-/// Refuses on a dirty tree and aborts on conflict so the user's checkout is
-/// never left in a broken/half-merged state. Status: "ok" | "dirty" | "conflict".
+///
+/// If the working tree has uncommitted changes we auto-stash them (including
+/// untracked files), merge into the now-clean tree, then restore the stash —
+/// so the user never has to merge by hand. Every failure path keeps the user's
+/// work recoverable (the stash is preserved on a conflicting pop). Status:
+///   "ok"             = merged, tree restored cleanly
+///   "conflict"       = merge hit a conflict; aborted, stash restored, tree unchanged
+///   "restore_dirty"  = merged OK, but restoring the stash conflicted — the
+///                       user's changes are SAFE in `git stash list`
+///   "stash_failed"   = couldn't even stash; nothing was changed
 #[tauri::command]
 pub fn wt_finalize(
     cwd: String,
@@ -218,19 +226,45 @@ pub fn wt_finalize(
     message: String,
 ) -> Result<MergeResult, String> {
     let dirty = git(&cwd, &["status", "--porcelain"])?;
-    if !dirty.trim().is_empty() {
+    let stashed = !dirty.trim().is_empty();
+    if stashed {
+        // -u also stashes untracked files (e.g. brand-new files) so the merge
+        // sees a truly clean tree.
+        let (ok, _o, _e) =
+            git_raw(&cwd, &["stash", "push", "-u", "-m", "fleet-finalize-autostash"])?;
+        if !ok {
+            return Ok(MergeResult {
+                status: "stash_failed".into(),
+            });
+        }
+    }
+
+    let (merged, _o, _e) = git_raw(&cwd, &["merge", "--no-ff", "-m", &message, &branch])?;
+    if !merged {
+        // Roll the merge back and put the user's work back exactly as it was.
+        let _ = git_raw(&cwd, &["merge", "--abort"]);
+        if stashed {
+            let _ = git_raw(&cwd, &["stash", "pop"]);
+        }
         return Ok(MergeResult {
-            status: "dirty".into(),
+            status: "conflict".into(),
         });
     }
-    let (ok, _o, _e) = git_raw(&cwd, &["merge", "--no-ff", "-m", &message, &branch])?;
-    if ok {
-        let _ = git_raw(&cwd, &["worktree", "remove", "--force", &integ_dir]);
-        let _ = git_raw(&cwd, &["worktree", "prune"]);
-        return Ok(MergeResult { status: "ok".into() });
+
+    // Merge committed — clean up the integration worktree before restoring.
+    let _ = git_raw(&cwd, &["worktree", "remove", "--force", &integ_dir]);
+    let _ = git_raw(&cwd, &["worktree", "prune"]);
+
+    if stashed {
+        let (popped, _po, _pe) = git_raw(&cwd, &["stash", "pop"])?;
+        if !popped {
+            // A conflicting pop leaves markers in the tree AND keeps the stash
+            // entry, so nothing is lost. Surface a distinct status to warn.
+            return Ok(MergeResult {
+                status: "restore_dirty".into(),
+            });
+        }
     }
-    let _ = git_raw(&cwd, &["merge", "--abort"]);
-    Ok(MergeResult {
-        status: "conflict".into(),
-    })
+
+    Ok(MergeResult { status: "ok".into() })
 }

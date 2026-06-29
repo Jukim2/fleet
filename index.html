@@ -4,11 +4,54 @@
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/vite.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Tauri + React + Typescript</title>
+    <title>Fleet</title>
   </head>
 
   <body>
-    <div id="root"></div>
+    <div id="root">
+      <div
+        id="boot-fallback"
+        style="height:100vh;display:flex;align-items:center;justify-content:center;font-family:system-ui,sans-serif;color:#6b7280;background:#0b0b0f"
+      >
+        로딩 중…
+      </div>
+    </div>
+
+    <!-- Boot watchdog: if React hasn't mounted shortly after load (e.g. the dev
+         server wasn't ready when the webview opened, or a module failed to load),
+         reload up to twice, then show a manual retry instead of a blank window. -->
+    <script>
+      (function () {
+        var KEY = "fleet-boot-reloads";
+        window.addEventListener("load", function () {
+          setTimeout(function () {
+            if (window.__fleetMounted) return;
+            var n = 0;
+            try {
+              n = parseInt(sessionStorage.getItem(KEY) || "0", 10) || 0;
+            } catch (e) {}
+            if (n < 2) {
+              try {
+                sessionStorage.setItem(KEY, String(n + 1));
+              } catch (e) {}
+              location.reload();
+              return;
+            }
+            var el = document.getElementById("boot-fallback");
+            if (el) {
+              el.style.flexDirection = "column";
+              el.style.gap = "12px";
+              el.innerHTML =
+                "<div>화면을 불러오지 못했어요.</div>" +
+                '<button style="padding:8px 16px;cursor:pointer" onclick="try{sessionStorage.removeItem(\'' +
+                KEY +
+                "')}catch(e){};location.reload()\">다시 시도</button>";
+            }
+          }, 3000);
+        });
+      })();
+    </script>
+
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

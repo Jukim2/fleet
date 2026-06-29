@@ -254,6 +254,12 @@ export function useFleet() {
       setActiveProjectId(first);
       if (first) setVisited({ [first]: true });
       loaded.current = true;
+    }).catch((e) => {
+      // A failed load must not leave the app stuck on a blank screen: fall back
+      // to the empty config (welcome screen) and let the user start fresh.
+      console.error("loadConfig failed:", e);
+      loaded.current = true;
+      setActiveProjectId(null);
     });
   }, []);
 
@@ -1284,12 +1290,17 @@ export function useFleet() {
               );
               if (res.status === "ok")
                 finalNote = `${run.branch}를 현재 브랜치에 병합했어요.`;
-              else if (res.status === "dirty")
-                finalNote = `작업트리에 커밋 안 된 변경이 있어 최종 병합을 건너뛰었어요 — 정리 후 ${run.branch}를 수동 병합하세요.`;
-              else finalNote = `최종 병합에서 충돌이 나 중단했어요 — ${run.branch}를 직접 병합해주세요.`;
+              else if (res.status === "restore_dirty")
+                finalNote = `${run.branch}를 병합했어요. 단, 커밋 안 했던 변경을 되돌리다 충돌이 나 작업트리에 남겨뒀어요 (안전하게 git stash에도 보관됨 — 충돌 해결 후 git stash drop).`;
+              else if (res.status === "conflict")
+                finalNote = `최종 병합에서 충돌이 나 중단했어요 (작업트리는 원래대로 복원됨) — ${run.branch}를 직접 병합해주세요.`;
+              else if (res.status === "stash_failed")
+                finalNote = `작업트리 변경을 임시 보관(stash)하지 못해 병합을 건너뛰었어요 — 정리 후 ${run.branch}를 수동 병합하세요.`;
+              else finalNote = `최종 병합을 건너뛰었어요 — ${run.branch}를 수동 병합하세요.`;
+              const clean = res.status === "ok";
               setWtMsg((m) => ({
                 ...m,
-                [projectId]: res.status === "ok" ? `✅ 플랜 완료 · ${finalNote}` : `플랜 완료. 단, ${finalNote}`,
+                [projectId]: clean ? `✅ 플랜 완료 · ${finalNote}` : `⚠️ 플랜 완료. 단, ${finalNote}`,
               }));
             } catch (e) {
               finalNote = `최종 병합 실패: ${String(e)}`;
