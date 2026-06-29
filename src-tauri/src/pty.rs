@@ -79,19 +79,41 @@ pub fn spawn_session(
     let app_for_thread = app.clone();
     let id_for_thread = id.clone();
     thread::spawn(move || {
-        let mut buf = [0u8; 8192];
+        let mut buf = [0u8; 65536];
+        // Carry incomplete trailing bytes across reads: claude's TUI emits many
+        // multi-byte glyphs (box-drawing, emoji) and a read boundary can split
+        // one mid-sequence. Decoding each chunk independently would turn the
+        // split bytes into replacement chars (visible screen corruption), so we
+        // only emit the valid UTF-8 prefix and keep the remainder for next read.
+        let mut pending: Vec<u8> = Vec::new();
         loop {
             match reader.read(&mut buf) {
                 Ok(0) => break,
                 Ok(n) => {
-                    let data = String::from_utf8_lossy(&buf[..n]).to_string();
-                    let _ = app_for_thread.emit(
-                        "pty-output",
-                        PtyOutput {
-                            id: id_for_thread.clone(),
-                            data,
-                        },
-                    );
+                    pending.extend_from_slice(&buf[..n]);
+                    let valid_up_to = match std::str::from_utf8(&pending) {
+                        Ok(_) => pending.len(),
+                        Err(e) => e.valid_up_to(),
+                    };
+                    // A UTF-8 char is at most 4 bytes. If more than that trails
+                    // the valid prefix the bytes are genuinely invalid, not a
+                    // split char — flush them lossily so we never get stuck.
+                    let emit_up_to = if pending.len() - valid_up_to > 3 {
+                        pending.len()
+                    } else {
+                        valid_up_to
+                    };
+                    if emit_up_to > 0 {
+                        let data = String::from_utf8_lossy(&pending[..emit_up_to]).to_string();
+                        let _ = app_for_thread.emit(
+                            "pty-output",
+                            PtyOutput {
+                                id: id_for_thread.clone(),
+                                data,
+                            },
+                        );
+                        pending.drain(..emit_up_to);
+                    }
                 }
                 Err(_) => break,
             }

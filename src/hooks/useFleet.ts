@@ -741,13 +741,27 @@ export function useFleet() {
     });
   const addTheme = (projectId: string, title = "새 테마") =>
     editPlan(projectId, (p) => ({ ...p, themes: [...p.themes, { id: uid(), title }] }));
+  // Adding under a done node: that node auto-collapses (done), so a freshly added
+  // child would be hidden. Force the parent(s) open so the addition is visible.
   const addFeature = (projectId: string, themeId: string, title = "새 기능") =>
-    editPlan(projectId, (p) => ({ ...p, features: [...p.features, { id: uid(), themeId, title }] }));
-  const addStep = (projectId: string, featureId: string, title = "새 단계") =>
     editPlan(projectId, (p) => ({
       ...p,
-      steps: [...p.steps, { id: uid(), featureId, title, prompt: "", deps: [] }],
+      features: [...p.features, { id: uid(), themeId, title }],
+      collapsed: { ...(p.collapsed ?? {}), [themeId]: false },
     }));
+  const addStep = (projectId: string, featureId: string, title = "새 단계") =>
+    editPlan(projectId, (p) => {
+      const themeId = p.features.find((f) => f.id === featureId)?.themeId;
+      return {
+        ...p,
+        steps: [...p.steps, { id: uid(), featureId, title, prompt: "", deps: [] }],
+        collapsed: {
+          ...(p.collapsed ?? {}),
+          [featureId]: false,
+          ...(themeId ? { [themeId]: false } : {}),
+        },
+      };
+    });
   const renameNode = (projectId: string, id: string, title: string) =>
     editPlan(projectId, (p) => ({
       ...p,

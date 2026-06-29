@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 import { Terminal as XTerm } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
+import { WebglAddon } from "@xterm/addon-webgl";
 import { listen } from "@tauri-apps/api/event";
 import "@xterm/xterm/css/xterm.css";
 import { resizePty, spawnSession, writePty } from "../../api/pty";
@@ -53,6 +54,19 @@ export default function Terminal({
     termRef.current = term;
     fitRef.current = fit;
     fit.fit();
+
+    // GPU-accelerated rendering. The default DOM renderer makes typing and
+    // scrolling sluggish and chokes on claude's rapid full-screen TUI redraws;
+    // WebGL offloads cell rendering to the GPU. If the GL context is lost (e.g.
+    // tab backgrounded, driver hiccup) dispose the addon so xterm falls back to
+    // the DOM renderer instead of freezing.
+    try {
+      const webgl = new WebglAddon();
+      webgl.onContextLoss(() => webgl.dispose());
+      term.loadAddon(webgl);
+    } catch {
+      /* WebGL unavailable — keep the DOM renderer */
+    }
 
     // Claude's TUI enables mouse tracking, so by default xterm forwards wheel
     // events to the app instead of scrolling its own scrollback — the terminal

@@ -484,7 +484,8 @@ export default function PlanView({
   );
 }
 
-/** Edit a step's title + the prompt sent to its session. */
+/** Edit a step's instruction (prompt). The graph node's title is derived from the
+ *  instruction's first line — one field to edit instead of a title/prompt pair. */
 function StepEditor({
   step,
   onClose,
@@ -494,17 +495,20 @@ function StepEditor({
   onClose: () => void;
   onSave: (patch: { title: string; prompt: string }) => void;
 }) {
-  const [title, setTitle] = useState(step.title);
   const [prompt, setPrompt] = useState(step.prompt);
+  const save = () => {
+    const firstLine = prompt.trim().split("\n")[0].trim();
+    const title = (firstLine.length > 40 ? `${firstLine.slice(0, 40)}…` : firstLine) || step.title;
+    onSave({ title, prompt });
+  };
   return (
     <div className="plan-rd-overlay" onMouseDown={onClose}>
       <div className="plan-se" onMouseDown={(e) => e.stopPropagation()}>
         <div className="plan-rd-head">단계 편집</div>
-        <label className="plan-se-label">제목</label>
-        <input className="plan-goal-in" value={title} onChange={(e) => setTitle(e.target.value)} />
         <label className="plan-se-label">지시문 (세션에 전달될 prompt)</label>
         <textarea
           className="plan-se-prompt"
+          autoFocus
           value={prompt}
           onChange={(e) => setPrompt(e.target.value)}
           placeholder="이 단계를 수행할 세션에게 줄 지시문"
@@ -513,7 +517,7 @@ function StepEditor({
           <button className="btn" onClick={onClose}>
             취소
           </button>
-          <button className="btn primary" onClick={() => onSave({ title: title.trim() || step.title, prompt })}>
+          <button className="btn primary" onClick={save}>
             저장
           </button>
         </div>
