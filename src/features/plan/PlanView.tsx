@@ -4,7 +4,7 @@ import { gitIsRepo } from "../../api/git";
 import { openPath } from "../../api/system";
 import { ClaudeEffort, RunTarget } from "../../lib/plan";
 import { layoutPlan, NODE_H } from "../../lib/planLayout";
-import { PHASE_LABEL, WtLogEntry, WtPhase, WtRun, WtStep, wtProgress } from "../../lib/worktree";
+import { PHASE_LABEL, WtFix, WtLogEntry, WtPhase, WtRun, WtStep, wtProgress } from "../../lib/worktree";
 import "./plan.css";
 
 type StepState = "done" | "running" | "ready" | "blocked";
@@ -41,6 +41,8 @@ export default function PlanView({
   wtRun,
   wtLastRun,
   wtMsg,
+  wtFix,
+  onResolveFinalize,
   onStopWtRun,
   onClearWtLastRun,
   onShowStep,
@@ -56,6 +58,8 @@ export default function PlanView({
   wtRun?: WtRun;
   wtLastRun?: WtRun;
   wtMsg?: string;
+  wtFix?: WtFix;
+  onResolveFinalize: () => void;
   onStopWtRun: () => void;
   onClearWtLastRun: () => void;
   onShowStep: (termId: string) => void;
@@ -231,7 +235,14 @@ export default function PlanView({
             플래너 세션이 <code>.fleet/plan.json</code>을 작성하는 중… 완료되면 그래프에 자동 반영돼요.
           </div>
         )}
-        {wtMsg ? (
+        {wtFix ? (
+          <div className="plan-note plan-note-warn plan-note-fix">
+            <span>⚠ {wtMsg || `${wtFix.branch} 최종 병합에 손이 필요해요.`}</span>
+            <button className="plan-fix-btn" onClick={onResolveFinalize}>
+              🤖 클로드한테 해결시키기
+            </button>
+          </div>
+        ) : wtMsg ? (
           <div className="plan-note plan-note-warn" onClick={onClearWtMsg} title="클릭해 닫기">
             ⚠ {wtMsg}
           </div>

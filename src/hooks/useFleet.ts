@@ -28,7 +28,7 @@ import {
   wtSetup,
   wtFinalize,
 } from "../api/git";
-import { buildWtRun, WtLogEntry, WtRun } from "../lib/worktree";
+import { buildWtRun, WtFix, WtLogEntry, WtRun } from "../lib/worktree";
 import { buildInjectJs, embedBlocked, isKnownChatSite } from "../lib/webAdapters";
 import { laneLiveTerm } from "../lib/board";
 import {
@@ -172,6 +172,20 @@ export function useFleet() {
     });
   /** transient note shown in the plan view (e.g. "not a git repo") */
   const [wtMsg, setWtMsg] = useState<Record<string, string>>({});
+  /** a finalize that needs a human/Claude to finish (merge/restore conflict),
+   *  per project — drives the "🤖 클로드한테 해결시키기" button (non-persisted). */
+  const [wtFix, setWtFix] = useState<Record<string, WtFix>>({});
+  const wtFixRef = useRef(wtFix);
+  wtFixRef.current = wtFix;
+  const clearWtFix = (projectId: string) =>
+    setWtFix((m) => {
+      const next = { ...m };
+      delete next[projectId];
+      return next;
+    });
+  /** prompts queued to auto-submit into a freshly spawned session once it goes
+   *  idle (i.e. claude has finished booting). Keyed by termId. */
+  const autoSubmit = useRef<Record<string, { text: string; sent: boolean }>>({});
   /** per-step orchestration flags for the wt runner */
   const wtSent = useRef<Record<string, boolean>>({}); // prompt has been typed in
   const wtAwait = useRef<Record<string, boolean>>({}); // post-send grace (conflict-resolve phase)
@@ -273,6 +287,20 @@ export function useFleet() {
   useEffect(() => {
     if (loaded.current) saveConfig(config);
   }, [config]);
+
+  // Auto-submit a queued prompt into a freshly spawned session once it reports
+  // idle (claude finished booting). Used by resolveFinalize so the user doesn't
+  // have to type the fix request themselves.
+  useEffect(() => {
+    for (const [termId, p] of Object.entries(autoSubmit.current)) {
+      if (p.sent || statuses[termId] !== "idle") continue;
+      p.sent = true;
+      submitPrompt(termId, p.text);
+      window.setTimeout(() => {
+        delete autoSubmit.current[termId];
+      }, 1500);
+    }
+  }, [statuses]);
 
   // Keep the resume list fresh without a manual ⟳. When a Claude turn finishes
   // (a terminal returns to idle) its transcript was just written, so re-read the
@@ -931,6 +959,7 @@ export function useFleet() {
     const slug = uid().slice(0, 6);
     const run = { ...buildWtRun(projectId, project.path, plan, stepIds, auto, slug, effort), startedAt: Date.now() };
     clearWtLastRun(projectId); // a new run supersedes the archived one
+    clearWtFix(projectId); // and clears any stuck-merge banner from before
     setWtMsg((m) => ({ ...m, [projectId]: `worktree 파이프라인 시작… (${run.steps.length}단계, ${run.branch})` }));
     // Pre-clear Claude Code's first-run gates (folder-trust per worktree dir,
     // plus the --dangerously-skip-permissions warning in auto mode) so the
@@ -971,6 +1000,50 @@ export function useFleet() {
     setWtRun(projectId, null);
   };
   const clearWtMsg = (projectId: string) => setWtMsg((m) => ({ ...m, [projectId]: "" }));
+
+  /** The fix request handed to Claude, tailored to how the final merge got stuck. */
+  const finalizeFixPrompt = (fix: WtFix): string => {
+    const b = fix.branch;
+    if (fix.status === "restore_dirty")
+      return (
+        `방금 플랜 통합 브랜치 ${b}를 현재 브랜치에 병합했는데, 그 직전에 자동으로 stash 해둔 내 ` +
+        `미저장 변경을 복원(git stash pop)하다가 충돌이 났어. 지금 작업트리에 충돌 마커가 남아있고, ` +
+        `그 변경은 'fleet-finalize-autostash'라는 이름으로 git stash 에도 그대로 보관돼 있어. ` +
+        `충돌 마커를 올바르게 정리해서 병합 결과와 내 변경을 모두 살려 통합하고, 정상 복원이 확인되면 ` +
+        `해당 stash 항목을 git stash drop 해줘. 새 커밋은 만들지 마.`
+      );
+    if (fix.status === "conflict")
+      return (
+        `플랜 통합 브랜치 ${b}를 현재 브랜치에 병합하려다 충돌이 나서 병합이 취소(abort)된 상태야. ` +
+        `작업트리에 커밋 안 한 변경이 있으면 먼저 안전하게 처리(필요하면 stash 후 복원)한 다음, ` +
+        `git merge --no-ff ${b} 로 다시 병합하고 충돌난 파일들을 올바르게 통합해서 병합 커밋까지 완료해줘. ` +
+        `기존 동작이 깨지지 않게 신경 써줘.`
+      );
+    // stash_failed
+    return (
+      `플랜 통합 브랜치 ${b} 가 아직 현재 브랜치에 병합되지 않았어. 작업트리에 커밋 안 한 변경이 있으면 ` +
+      `안전하게 처리한 뒤 git merge --no-ff ${b} 로 병합하고, 충돌이 있으면 해결해서 병합을 완료해줘.`
+    );
+  };
+
+  /** Hand a stuck final merge to a Claude session: spawn it in the repo root,
+   *  reveal it, and auto-send a prompt describing exactly what to fix. */
+  const resolveFinalize = async (projectId: string) => {
+    const fix = wtFixRef.current[projectId];
+    if (!fix) return;
+    // Clear Claude's first-run gates so an auto session can run git unattended.
+    try {
+      await prepareClaudeAuto([fix.cwd], true);
+    } catch (e) {
+      console.warn("[wt] prepareClaudeAuto (resolveFinalize) failed", e);
+    }
+    const termId = spawnWorktreeTerminal(projectId, claudeStartup(true), "🤖 병합 해결", fix.cwd);
+    autoSubmit.current[termId] = { text: finalizeFixPrompt(fix), sent: false };
+    revealTerm(projectId, termId);
+    clearWtFix(projectId);
+    setWtMsg((m) => ({ ...m, [projectId]: `🤖 ${fix.branch} 병합 문제를 해결할 세션을 띄웠어요.` }));
+  };
+
   /** Reveal a step's live session in a pane (for watching progress). */
   const showWtStep = (projectId: string, termId: string) => revealTerm(projectId, termId);
 
@@ -1322,6 +1395,14 @@ export function useFleet() {
                 ...m,
                 [projectId]: clean ? `✅ 플랜 완료 · ${finalNote}` : `⚠️ 플랜 완료. 단, ${finalNote}`,
               }));
+              // A stuck merge becomes a one-click "let Claude finish it" action.
+              if (res.status !== "ok") {
+                const status = res.status;
+                setWtFix((m) => ({
+                  ...m,
+                  [projectId]: { branch: run.branch, cwd: run.cwd, status },
+                }));
+              }
             } catch (e) {
               finalNote = `최종 병합 실패: ${String(e)}`;
               setWtMsg((m) => ({ ...m, [projectId]: finalNote }));
@@ -1452,6 +1533,8 @@ export function useFleet() {
     wtLastRun,
     clearWtLastRun,
     wtMsg,
+    wtFix,
+    resolveFinalize,
     stopWtRun,
     clearWtMsg,
     showWtStep,

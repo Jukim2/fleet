@@ -99,6 +99,28 @@
   color: #f59e0b;
   cursor: pointer;
 }
+.plan-note-fix {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  cursor: default;
+}
+.plan-fix-btn {
+  flex: none;
+  padding: 5px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #fff;
+  background: #d97706;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.plan-fix-btn:hover {
+  background: #b45309;
+}
 
 /* worktree run banner + activity log */
 .plan-wt-banner {

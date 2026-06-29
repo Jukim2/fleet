@@ -211,6 +211,8 @@ export default function App() {
           wtRun={f.wtRuns[activeProject.id]}
           wtLastRun={f.wtLastRun[activeProject.id]}
           wtMsg={f.wtMsg[activeProject.id]}
+          wtFix={f.wtFix[activeProject.id]}
+          onResolveFinalize={() => f.resolveFinalize(activeProject.id)}
           onStopWtRun={() => f.stopWtRun(activeProject.id)}
           onClearWtLastRun={() => f.clearWtLastRun(activeProject.id)}
           onShowStep={(termId) => f.showWtStep(activeProject.id, termId)}

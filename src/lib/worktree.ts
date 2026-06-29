@@ -39,6 +39,16 @@ export type WtLogEntry = {
   note?: string; // detail / error message
 };
 
+/** Final-merge outcome that still needs a human/Claude to finish. */
+export type FinalizeFixStatus = "conflict" | "restore_dirty" | "stash_failed";
+
+/** A stuck finalize, kept per project to drive the "let Claude fix it" button. */
+export type WtFix = {
+  branch: string; // integration branch to merge (fleet/plan-XXXX)
+  cwd: string; // repo root the merge happens in
+  status: FinalizeFixStatus;
+};
+
 export type WtRun = {
   projectId: string;
   cwd: string; // repo root (normalized to forward slashes)
