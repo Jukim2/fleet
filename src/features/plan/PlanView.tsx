@@ -3,7 +3,7 @@ import { Plan, PlanStep, Project, TaskStatus, Terminal, TermStatus } from "../..
 import { gitIsRepo } from "../../api/git";
 import { openPath } from "../../api/system";
 import { ClaudeEffort, RunTarget } from "../../lib/plan";
-import { layoutPlan, NODE_H } from "../../lib/planLayout";
+import { layoutPlan } from "../../lib/planLayout";
 import { PHASE_LABEL, WtFix, WtLogEntry, WtPhase, WtRun, WtStep, wtProgress } from "../../lib/worktree";
 import "./plan.css";
 
@@ -314,17 +314,35 @@ export default function PlanView({
                     <div
                       key={n.id}
                       className={`plan-node step ${cls} ${on ? "sel" : ""}`}
-                      style={{ left: n.x, top: n.y, width: n.w, height: NODE_H }}
+                      style={{ left: n.x, top: n.y, width: n.w, height: n.h }}
                       onClick={() => toggleStep(n.id)}
                       onDoubleClick={() => setStepEdit(s)}
                     >
-                      <span className="plan-node-title">{n.title}</span>
-                      <span className={`plan-node-state ${cls}`}>{label}</span>
-                      {/* hover preview of the instruction (지시문) — visible without clicking */}
-                      <div className="plan-node-tip" role="tooltip">
-                        <div className="plan-node-tip-head">지시문</div>
-                        <div className="plan-node-tip-body">{tip}</div>
+                      <div className="plan-node-step-head">
+                        <span className="plan-node-title">{n.title}</span>
+                        <span className={`plan-node-state ${cls}`}>{label}</span>
                       </div>
+                      {/* instruction (지시문) — edit inline; while a worktree run
+                          is active show its read-only status instead */}
+                      {wt ? (
+                        <div className="plan-node-body" title={tip}>
+                          {tip}
+                        </div>
+                      ) : (
+                        <textarea
+                          key={s.id}
+                          className="plan-node-prompt"
+                          defaultValue={s.prompt}
+                          placeholder="지시문 입력…"
+                          spellCheck={false}
+                          onMouseDown={(e) => e.stopPropagation()}
+                          onClick={(e) => e.stopPropagation()}
+                          onDoubleClick={(e) => e.stopPropagation()}
+                          onBlur={(e) => {
+                            if (e.target.value !== s.prompt) onEditStep(s.id, { prompt: e.target.value });
+                          }}
+                        />
+                      )}
                       <span className="plan-node-actions">
                         {liveTerm && (
                           <button
@@ -372,7 +390,7 @@ export default function PlanView({
                   <div
                     key={n.id}
                     className={`plan-node ${n.kind} ${allDone ? "done" : ""} ${allSel ? "sel" : ""}`}
-                    style={{ left: n.x, top: n.y, width: n.w, height: NODE_H }}
+                    style={{ left: n.x, top: n.y, width: n.w, height: n.h }}
                   >
                     <button
                       className="plan-node-caret"

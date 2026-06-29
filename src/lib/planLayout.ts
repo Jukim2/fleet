@@ -7,6 +7,8 @@ export const THEME_W = 150;
 export const FEAT_W = 158;
 export const STEP_W = 210;
 export const NODE_H = 46;
+/** Step nodes are taller so the instruction (지시문) shows inline under the title. */
+export const STEP_H = 104;
 export const ROW_GAP = 14;
 export const COL_GAP = 56;
 export const THEME_GAP = 26; // extra vertical space between themes
@@ -23,13 +25,15 @@ export type GNode = {
   x: number;
   y: number;
   w: number;
+  h: number;
 };
 export type GEdge = { id: string; d: string; kind: "hier" | "dep" };
 export type PlanLayout = { nodes: GNode[]; edges: GEdge[]; width: number; height: number };
 
 const widthOf = (k: GNodeKind) => (k === "theme" ? THEME_W : k === "feature" ? FEAT_W : STEP_W);
+const heightOf = (k: GNodeKind) => (k === "step" ? STEP_H : NODE_H);
 const cx = (n: GNode) => n.x + n.w;
-const cy = (n: GNode) => n.y + NODE_H / 2;
+const cy = (n: GNode) => n.y + n.h / 2;
 
 /** Build positioned nodes + edges. `collapsed(id)` hides a node's children. */
 export function layoutPlan(plan: Plan, collapsed: (id: string) => boolean): PlanLayout {
@@ -45,10 +49,12 @@ export function layoutPlan(plan: Plan, collapsed: (id: string) => boolean): Plan
     byId[n.id] = n;
     return n;
   };
-  const place = (id: string, kind: GNodeKind, title: string, x: number, yCenter: number) =>
-    push({ id, kind, title, x, y: yCenter - NODE_H / 2, w: widthOf(kind) });
+  const place = (id: string, kind: GNodeKind, title: string, x: number, yCenter: number) => {
+    const h = heightOf(kind);
+    return push({ id, kind, title, x, y: yCenter - h / 2, w: widthOf(kind), h });
+  };
 
-  let cursor = NODE_H / 2; // y of the next leaf's center
+  let cursor = STEP_H / 2; // y of the next leaf's center (steps are the tallest leaves)
 
   for (const theme of plan.themes) {
     const tCollapsed = collapsed(theme.id);
@@ -68,7 +74,7 @@ export function layoutPlan(plan: Plan, collapsed: (id: string) => boolean): Plan
           for (const step of steps) {
             place(step.id, "step", step.title, COL_STEP, cursor);
             stepCenters.push(cursor);
-            cursor += NODE_H + ROW_GAP;
+            cursor += STEP_H + ROW_GAP;
           }
           const c = avg(stepCenters);
           place(feat.id, "feature", feat.title, COL_FEAT, c);

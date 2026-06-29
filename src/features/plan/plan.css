@@ -384,13 +384,69 @@
   opacity: 0.7;
 }
 
-/* step nodes: clickable + status-colored left bar */
+/* step nodes: clickable + status-colored left bar; lay out as a column so the
+   instruction (지시문) sits inline under the title row. */
 .plan-node.step {
   cursor: pointer;
   border-left-width: 3px;
   border-left-color: var(--border);
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: flex-start;
+  gap: 4px;
+  padding: 7px 10px;
+}
+.plan-node-step-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
 .plan-node.step:hover {
+  border-color: var(--accent);
+}
+/* instruction body — always visible, clamped to fit the node (read-only/wt note) */
+.plan-node-body {
+  flex: 1;
+  min-height: 0;
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--muted);
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 4;
+  -webkit-box-orient: vertical;
+}
+/* instruction — directly editable inline, no double-click/modal needed */
+.plan-node-prompt {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  resize: none;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  padding: 3px 5px;
+  margin: -1px -2px;
+  font-family: inherit;
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--muted);
+  cursor: text;
+  transition: background 0.12s, border-color 0.12s, color 0.12s;
+}
+.plan-node-prompt::placeholder {
+  color: var(--muted);
+  opacity: 0.55;
+}
+.plan-node-prompt:hover {
+  border-color: var(--border);
+}
+.plan-node-prompt:focus {
+  outline: none;
+  color: var(--text);
+  background: var(--bg);
   border-color: var(--accent);
 }
 .plan-node.step.done {
@@ -469,44 +525,6 @@
   50% {
     box-shadow: 0 0 0 3px rgba(167, 139, 250, 0.25);
   }
-}
-
-/* instruction (지시문) hover preview — readable without opening the editor */
-.plan-node-tip {
-  position: absolute;
-  top: calc(100% + 8px);
-  left: 0;
-  width: max(100%, 240px);
-  max-width: 360px;
-  background: var(--surface);
-  border: 1px solid var(--accent);
-  border-radius: 8px;
-  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.45);
-  padding: 8px 10px;
-  z-index: 6;
-  display: none;
-  pointer-events: none;
-  white-space: normal;
-}
-.plan-node.step:hover .plan-node-tip {
-  display: block;
-}
-.plan-node-tip-head {
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  color: var(--accent);
-  margin-bottom: 4px;
-}
-.plan-node-tip-body {
-  font-size: 12px;
-  line-height: 1.5;
-  color: var(--text);
-  white-space: pre-wrap;
-  word-break: break-word;
-  max-height: 220px;
-  overflow-y: auto;
 }
 
 /* inline rename + hover actions */
