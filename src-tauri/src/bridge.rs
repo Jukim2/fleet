@@ -254,6 +254,74 @@ pub fn ensure_hook_installed() -> Result<(), String> {
     std::fs::write(&path, out).map_err(|e| e.to_string())
 }
 
+/// Pre-clear Claude Code's first-run startup gates so an automated worktree
+/// session never blocks on an interactive dialog the runner can't get past.
+///
+/// Two gates exist, both of which read as a false "idle" to the status scanner:
+///  1. The folder-trust dialog ("Do you trust the files in this folder?") —
+///     keyed per directory under `projects.<dir>.hasTrustDialogAccepted` in
+///     `~/.claude.json`. Worktree steps run in a brand-new dir every time, so
+///     this fires on *every* run unless pre-trusted.
+///  2. The `--dangerously-skip-permissions` warning — gated globally by
+///     `skipDangerousModePermissionPrompt` in `~/.claude/settings.json`. Only
+///     relevant when launching in auto mode (`skip_dangerous`).
+///
+/// Both keys are exactly what the `claude` binary reads at startup (verified
+/// against the installed CLI). Read-modify-write preserves all other fields.
+#[tauri::command]
+pub fn prepare_claude_auto(dirs: Vec<String>, skip_dangerous: bool) -> Result<(), String> {
+    let home = home_dir().ok_or_else(|| "no home dir".to_string())?;
+
+    // 1. Pre-trust each worktree dir in ~/.claude.json.
+    let claude_json = std::path::Path::new(&home).join(".claude.json");
+    let mut root: serde_json::Value = match std::fs::read_to_string(&claude_json) {
+        Ok(s) => serde_json::from_str(&s).unwrap_or_else(|_| serde_json::json!({})),
+        Err(_) => serde_json::json!({}),
+    };
+    if !root.is_object() {
+        root = serde_json::json!({});
+    }
+    let obj = root.as_object_mut().unwrap();
+    let projects_v = obj.entry("projects").or_insert_with(|| serde_json::json!({}));
+    if !projects_v.is_object() {
+        *projects_v = serde_json::json!({});
+    }
+    let projects = projects_v.as_object_mut().unwrap();
+    for dir in &dirs {
+        let entry = projects.entry(dir.clone()).or_insert_with(|| serde_json::json!({}));
+        if !entry.is_object() {
+            *entry = serde_json::json!({});
+        }
+        entry
+            .as_object_mut()
+            .unwrap()
+            .insert("hasTrustDialogAccepted".into(), serde_json::json!(true));
+    }
+    // Match claude's own compact format (it rewrites this file on exit).
+    let out = serde_json::to_string(&root).map_err(|e| e.to_string())?;
+    std::fs::write(&claude_json, out).map_err(|e| e.to_string())?;
+
+    // 2. Disable the bypass-permissions warning (auto mode only).
+    if skip_dangerous {
+        let dir = std::path::Path::new(&home).join(".claude");
+        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        let path = dir.join("settings.json");
+        let mut s: serde_json::Value = match std::fs::read_to_string(&path) {
+            Ok(c) => serde_json::from_str(&c).unwrap_or_else(|_| serde_json::json!({})),
+            Err(_) => serde_json::json!({}),
+        };
+        if !s.is_object() {
+            s = serde_json::json!({});
+        }
+        s.as_object_mut()
+            .unwrap()
+            .insert("skipDangerousModePermissionPrompt".into(), serde_json::json!(true));
+        let out = serde_json::to_string_pretty(&s).map_err(|e| e.to_string())?;
+        std::fs::write(&path, out).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
 /// True if Fleet's hooks are present in ~/.claude/settings.json.
 pub(crate) fn hook_is_installed() -> bool {
     let home = match home_dir() {

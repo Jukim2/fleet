@@ -5,7 +5,14 @@ import {
   requestPermission,
   sendNotification,
 } from "@tauri-apps/plugin-notification";
-import { ensureHookInstalled, HookEvent, killSession, sendPrompt, writePty } from "../api/pty";
+import {
+  ensureHookInstalled,
+  HookEvent,
+  killSession,
+  prepareClaudeAuto,
+  sendPrompt,
+  writePty,
+} from "../api/pty";
 import { loadConfig, saveConfig } from "../api/config";
 import { closeWebTab, openWebTab, webEval } from "../api/web";
 import { cdpEval, cdpOpen, cdpTargets } from "../api/cdp";
@@ -919,6 +926,14 @@ export function useFleet() {
     const run = { ...buildWtRun(projectId, project.path, plan, stepIds, auto, slug, effort), startedAt: Date.now() };
     clearWtLastRun(projectId); // a new run supersedes the archived one
     setWtMsg((m) => ({ ...m, [projectId]: `worktree 파이프라인 시작… (${run.steps.length}단계, ${run.branch})` }));
+    // Pre-clear Claude Code's first-run gates (folder-trust per worktree dir,
+    // plus the --dangerously-skip-permissions warning in auto mode) so the
+    // sessions don't hang on a startup dialog the runner can't get past.
+    try {
+      await prepareClaudeAuto([...run.steps.map((s) => s.dir), run.integDir], auto);
+    } catch (e) {
+      console.warn("[wt] prepareClaudeAuto failed (continuing)", e);
+    }
     try {
       await wtSetup(run.cwd, run.integDir, run.branch);
     } catch (e) {
@@ -1106,6 +1121,10 @@ export function useFleet() {
                   continue;
                 }
                 const startup = claudeStartup(run.auto, run.effort);
+                // Re-assert the trust gate just before launch: the worktree dir
+                // now exists, and another running claude may have rewritten
+                // ~/.claude.json since startWtRun, dropping our pre-trust.
+                await prepareClaudeAuto([step.dir], run.auto).catch(() => {});
                 step.termId = spawnWorktreeTerminal(projectId, startup, `▶ ${step.title}`, step.dir);
                 // Tile into its own pane: visible AND a real PTY size, so several
                 // steps run concurrently without pushing each other to 0-size.
@@ -1183,6 +1202,7 @@ export function useFleet() {
                     if (step.termId) closeTerm(projectId, step.termId);
                     step.termId = undefined;
                   } else {
+                    await prepareClaudeAuto([run.integDir], true).catch(() => {});
                     step.resolveTermId = spawnWorktreeTerminal(
                       projectId,
                       claudeStartup(true, run.effort),

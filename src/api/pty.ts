@@ -23,6 +23,12 @@ export const killSession = (id: string) => invoke<void>("kill_session", { id });
 /** Install Fleet's Claude Code lifecycle hooks into ~/.claude/settings.json. */
 export const ensureHookInstalled = () => invoke<void>("ensure_hook_installed");
 
+/** Pre-clear Claude Code's first-run startup gates (folder-trust dialog for each
+ *  worktree dir, plus the --dangerously-skip-permissions warning when auto) so an
+ *  automated worktree session doesn't hang on a dialog the runner can't pass. */
+export const prepareClaudeAuto = (dirs: string[], skipDangerous: boolean) =>
+  invoke<void>("prepare_claude_auto", { dirs, skipDangerous });
+
 /** Payload re-emitted by the Rust hook bridge for each Claude Code hook fire. */
 export type HookEvent = {
   termId: string;
