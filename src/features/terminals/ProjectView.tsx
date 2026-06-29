@@ -4,6 +4,8 @@ import NewTerminalMenu from "./NewTerminalMenu";
 import SplitLayout, { SplitCtx } from "./SplitLayout";
 import { LayoutNode, Project, Terminal as Term, TermStatus } from "../../types";
 import { leaves } from "../../lib/layout";
+import { openPath } from "../../api/system";
+import { mod } from "../../lib/platform";
 import "./terminals.css";
 
 type Rect = { left: number; top: number; width: number; height: number };
@@ -56,6 +58,7 @@ export default function ProjectView({
   onStatus,
   onOpenPalette,
   onOpenDrawer,
+  onOpenWeb,
 }: {
   project: Project;
   terminals: Term[];
@@ -78,6 +81,7 @@ export default function ProjectView({
   onStatus: (id: string, status: TermStatus) => void;
   onOpenPalette: () => void;
   onOpenDrawer: (section: "blocks" | "queue") => void;
+  onOpenWeb: () => void;
 }) {
   const stageRef = useRef<HTMLDivElement>(null);
   const [panes, setPanes] = useState<PaneRect[]>([]);
@@ -223,16 +227,22 @@ export default function ProjectView({
           <span className="pv-path" title={project.path}>
             {project.path}
           </span>
+          <button className="pv-open" title="폴더 열기" onClick={() => openPath(project.path)}>
+            📂
+          </button>
         </div>
         <div className="pv-tools">
-          <button className="tool" onClick={onOpenPalette} title="블럭 빠른 전송 (⌘K)">
-            ⌘K
+          <button className="tool" onClick={onOpenPalette} title={`블럭 빠른 전송 (${mod("K")})`}>
+            {mod("K")}
           </button>
           <button className="tool" onClick={() => onOpenDrawer("blocks")} title="블럭">
             블럭
           </button>
           <button className="tool" onClick={() => onOpenDrawer("queue")} title="큐">
             큐
+          </button>
+          <button className="tool" onClick={onOpenWeb} title="웹 AI 탭 (동시 전송)">
+            웹
           </button>
           <NewTerminalMenu onCreate={onNewTerm} />
         </div>

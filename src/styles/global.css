@@ -20,11 +20,42 @@ body,
   margin: 0;
 }
 body {
-  font-family: -apple-system, "Segoe UI", system-ui, sans-serif;
+  /* "Malgun Gothic"/"Apple SD Gothic Neo" give Hangul a real glyph instead of
+     relying on implicit fallback (Segoe UI has no Korean). */
+  font-family: -apple-system, "Segoe UI", "Malgun Gothic", "Apple SD Gothic Neo",
+    system-ui, sans-serif;
   color: var(--text);
   background: var(--bg);
   font-size: 13px;
   -webkit-font-smoothing: antialiased;
+}
+
+/* Thin, themed scrollbars everywhere. Without this, Windows (WebView2) shows
+   its chunky classic scrollbar; macOS hides it as a thin overlay, so the app
+   only looked right on macOS. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #3a3a42 transparent;
+}
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #3a3a42;
+  border-radius: 8px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #4d4d57;
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-corner {
+  background: transparent;
 }
 body.resizing {
   cursor: crosshair;

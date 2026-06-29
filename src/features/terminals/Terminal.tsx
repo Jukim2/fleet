@@ -32,7 +32,12 @@ export default function Terminal({
   useEffect(() => {
     const term = new XTerm({
       fontSize: 13,
-      fontFamily: "'SF Mono', Menlo, Monaco, monospace",
+      // Cross-platform monospace. macOS fonts come first, then the Windows
+      // ones (Cascadia ships with Windows Terminal; Consolas is always present)
+      // so the box-drawing/braille glyphs in claude's TUI logo render in a true
+      // monospace cell instead of falling back to Courier New (broken on Win).
+      fontFamily:
+        "Menlo, Monaco, 'SF Mono', 'Cascadia Mono', 'Cascadia Code', Consolas, 'DejaVu Sans Mono', monospace",
       cursorBlink: true,
       theme: {
         background: "#101014",

@@ -13,6 +13,7 @@ export async function loadConfig(): Promise<FleetConfig> {
       layouts: parsed.layouts ?? {},
       blocks: parsed.blocks ?? [],
       boards: parsed.boards ?? {},
+      webTabs: parsed.webTabs ?? [],
     };
     // Carry legacy per-terminal queues (pre-board configs) for one-time migration.
     if (parsed.queues) (cfg as unknown as { queues: unknown }).queues = parsed.queues;

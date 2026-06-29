@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { Block } from "../../types";
+import { mod } from "../../lib/platform";
 
 export default function BlocksPanel({
   blocks,
@@ -18,7 +19,7 @@ export default function BlocksPanel({
   };
   return (
     <div className="panel">
-      <p className="hint">자주 쓰는 프롬프트. ⌘K로 빠르게 현재 터미널에 보낼 수 있어요.</p>
+      <p className="hint">자주 쓰는 프롬프트. {mod("K")}로 빠르게 현재 터미널에 보낼 수 있어요.</p>
       <div className="rows">
         {blocks.length === 0 && <div className="empty">아직 블럭이 없어요.</div>}
         {blocks.map((b) => (

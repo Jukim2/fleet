@@ -7,6 +7,9 @@ import {
 } from "@tauri-apps/plugin-notification";
 import { ensureHookInstalled, HookEvent, killSession, sendPrompt } from "../api/pty";
 import { loadConfig, saveConfig } from "../api/config";
+import { closeWebTab, openWebTab, webEval } from "../api/web";
+import { cdpEval, cdpOpen, cdpTargets } from "../api/cdp";
+import { buildInjectJs, embedBlocked, isKnownChatSite } from "../lib/webAdapters";
 import {
   compact,
   firstLeaf,
@@ -30,6 +33,7 @@ import {
   TaskStatus,
   Terminal,
   TermStatus,
+  WebTab,
   emptyConfig,
 } from "../types";
 import { useClaudeSessions } from "./useClaudeSessions";
@@ -105,10 +109,26 @@ export function useFleet() {
     setTaskStatus(next);
   };
 
-  const { sessions, loading: sessionsLoading, refresh: refreshSessions } = useClaudeSessions(
-    activeProjectId,
-    config.projects,
-  );
+  const {
+    sessions,
+    loading: sessionsLoading,
+    refresh: refreshSessions,
+    remove: removeSession,
+  } = useClaudeSessions(activeProjectId, config.projects);
+
+  /** Resume session ids that already have a terminal tab in the active project,
+   *  mapped to that terminal — so the rail can mark them and jump instead of
+   *  spawning a duplicate `claude --resume`. */
+  const openSessionTerm = useMemo(() => {
+    const m: Record<string, string> = {};
+    if (!activeProjectId) return m;
+    for (const t of config.terminals) {
+      if (t.projectId !== activeProjectId) continue;
+      const match = /^claude --resume (\S+)/.exec(t.startup);
+      if (match) m[match[1]] = t.id;
+    }
+    return m;
+  }, [activeProjectId, config.terminals]);
 
   // --- load / persist ---
   useEffect(() => {
@@ -136,6 +156,22 @@ export function useFleet() {
   useEffect(() => {
     if (loaded.current) saveConfig(config);
   }, [config]);
+
+  // Keep the resume list fresh without a manual ⟳. When a Claude turn finishes
+  // (a terminal returns to idle) its transcript was just written, so re-read the
+  // active project's sessions shortly after any of its terminals goes idle.
+  const prevStatusesRef = useRef<Record<string, TermStatus>>({});
+  useEffect(() => {
+    const prev = prevStatusesRef.current;
+    prevStatusesRef.current = statuses;
+    if (!activeProjectId) return;
+    const becameIdle = config.terminals.some(
+      (t) => t.projectId === activeProjectId && statuses[t.id] === "idle" && prev[t.id] !== "idle",
+    );
+    if (!becameIdle) return;
+    const h = window.setTimeout(() => refreshSessions(), 1200);
+    return () => window.clearTimeout(h);
+  }, [statuses, activeProjectId, config.terminals, refreshSessions]);
 
   // --- helpers ---
   const setStatus = (id: string, status: TermStatus) => {
@@ -372,6 +408,50 @@ export function useFleet() {
     for (const t of config.terminals) {
       if (statuses[t.id] && statuses[t.id] !== "stopped") sendPrompt(t.id, b.text);
     }
+    // Also fan the prompt out to every open web AI tab.
+    broadcastToWebTabs(b.text);
+  };
+
+  // --- web tabs (logged-in AI sites) ---
+  const addWebTab = (name: string, url: string) =>
+    setConfig((c) => ({
+      ...c,
+      webTabs: [...c.webTabs, { id: uid(), name: name.trim() || url, url: url.trim() }],
+    }));
+  const removeWebTab = (id: string) => {
+    closeWebTab(id).catch(() => {});
+    setConfig((c) => ({ ...c, webTabs: c.webTabs.filter((w) => w.id !== id) }));
+  };
+  const renameWebTab = (id: string, name: string) =>
+    setConfig((c) => ({
+      ...c,
+      webTabs: c.webTabs.map((w) => (w.id === id ? { ...w, name } : w)),
+    }));
+  /** Open a web tab: embed-blocked sites (ChatGPT) launch in the Fleet-controlled
+   *  Chrome (CDP); others open as an embedded webview window. */
+  const openTab = (t: WebTab) => {
+    if (embedBlocked(t.url)) cdpOpen(t.url).catch(() => {});
+    else openWebTab(t.id, t.url, `Fleet · ${t.name}`).catch(() => {});
+  };
+  const openAllWebTabs = () => configRef.current.webTabs.forEach(openTab);
+  /** Inject + submit `text` in one embedded web tab (no-op if not open). */
+  const sendToWebTab = (t: WebTab, text: string) =>
+    webEval(t.id, buildInjectJs(t.url, text)).catch(() => {});
+  /** Inject the prompt into every AI chat tab in the Fleet-controlled Chrome. */
+  const cdpBroadcast = async (text: string) => {
+    try {
+      const targets = await cdpTargets();
+      for (const t of targets) {
+        if (isKnownChatSite(t.url)) cdpEval(t.ws, buildInjectJs(t.url, text)).catch(() => {});
+      }
+    } catch {
+      /* Chrome not running */
+    }
+  };
+  /** Fan a prompt out to both embedded web tabs AND the real Chrome tabs. */
+  const broadcastToWebTabs = (text: string) => {
+    configRef.current.webTabs.forEach((t) => sendToWebTab(t, text));
+    cdpBroadcast(text);
   };
 
   // --- queue board ---
@@ -532,11 +612,22 @@ export function useFleet() {
 
   const resume = (s: ClaudeSession) => {
     if (!activeProjectId) return;
+    // Already open in a tab? Jump to it instead of spawning a duplicate resume.
+    const existing = openSessionTerm[s.id];
+    if (existing) {
+      activateTerm(activeProjectId, existing);
+      return;
+    }
     // Carry the original session's identity over: name the resumed terminal after
     // its summary (first user message) instead of a fresh "Claude ↺ N" counter.
     const label = s.summary.replace(/\s+/g, " ").trim().slice(0, 24);
     const title = label || "Claude ↺";
     newTerm(activeProjectId, `claude --resume ${s.id}`, "Claude ↺", title);
+  };
+
+  /** Delete a transcript from disk and drop it from the resume list. */
+  const deleteSession = (s: ClaudeSession) => {
+    removeSession(s);
   };
 
   const liveByProject = useMemo(() => {
@@ -545,6 +636,20 @@ export function useFleet() {
       if (statuses[t.id] && statuses[t.id] !== "stopped") m[t.projectId] = (m[t.projectId] ?? 0) + 1;
     }
     return m;
+  }, [config.terminals, statuses]);
+
+  /** The most attention-worthy live status across each project's terminals, so
+   *  the rail can show one colored dot: a project waiting on a permission prompt
+   *  outranks a busy one, which outranks idle. Absent = nothing live. */
+  const projectStatus = useMemo(() => {
+    const rank: Record<string, number> = { idle: 1, busy: 2, waiting: 3 };
+    const best: Record<string, TermStatus> = {};
+    for (const t of config.terminals) {
+      const s = statuses[t.id];
+      if (!s || s === "stopped") continue;
+      if (!best[t.projectId] || rank[s] > rank[best[t.projectId]]) best[t.projectId] = s;
+    }
+    return best;
   }, [config.terminals, statuses]);
 
   return {
@@ -557,9 +662,11 @@ export function useFleet() {
     focusedTermId,
     focusedTerm,
     liveByProject,
+    projectStatus,
     sessions,
     sessionsLoading,
     refreshSessions,
+    openSessionTerm,
     setStatus,
     selectProject,
     addProject,
@@ -581,6 +688,13 @@ export function useFleet() {
     setBlocks,
     sendBlock,
     broadcastBlock,
+    addWebTab,
+    removeWebTab,
+    renameWebTab,
+    openTab,
+    openAllWebTabs,
+    sendToWebTab,
+    broadcastToWebTabs,
     addLane,
     removeLane,
     addTask,
@@ -589,5 +703,6 @@ export function useFleet() {
     toggleBoardRunning,
     resetBoard,
     resume,
+    deleteSession,
   };
 }

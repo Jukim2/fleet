@@ -26,6 +26,19 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
+.pv-open {
+  background: none;
+  border: none;
+  color: var(--muted);
+  font-size: 13px;
+  padding: 0 2px;
+  flex-shrink: 0;
+  align-self: center;
+  line-height: 1;
+}
+.pv-open:hover {
+  color: var(--text);
+}
 .pv-tools {
   display: flex;
   align-items: center;
@@ -45,11 +58,7 @@
   color: var(--text);
 }
 
-/* new terminal menu */
-.newterm {
-  position: relative;
-  flex-shrink: 0;
-}
+/* new terminal buttons */
 .newterm-btn {
   background: var(--surface);
   border: 1px solid var(--border);
@@ -57,36 +66,10 @@
   border-radius: 8px;
   padding: 6px 12px;
   font-size: 13px;
+  flex-shrink: 0;
 }
 .newterm-btn:hover {
   border-color: var(--accent);
-}
-.menu {
-  position: absolute;
-  right: 0;
-  top: calc(100% + 6px);
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 5px;
-  min-width: 180px;
-  z-index: 100;
-  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-.menu > button {
-  background: none;
-  border: none;
-  color: var(--text);
-  text-align: left;
-  padding: 8px 10px;
-  border-radius: 7px;
-  font-size: 13px;
-}
-.menu > button:hover {
-  background: rgba(167, 139, 250, 0.16);
 }
 
 /* ---- Tabs ---- */

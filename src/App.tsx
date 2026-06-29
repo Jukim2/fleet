@@ -6,6 +6,7 @@ import CommandPalette from "./features/blocks/CommandPalette";
 import Drawer from "./features/drawer/Drawer";
 import QueueBoard from "./features/board/QueueBoard";
 import SettingsPanel from "./features/settings/SettingsPanel";
+import WebPanel from "./features/web/WebPanel";
 import { ensureHookInstalled } from "./api/pty";
 import { checkForUpdate, UpdateAvailable } from "./api/system";
 import { useFleet } from "./hooks/useFleet";
@@ -15,6 +16,7 @@ export default function App() {
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [boardOpen, setBoardOpen] = useState(false);
+  const [webOpen, setWebOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [launchUpdate, setLaunchUpdate] = useState<UpdateAvailable | null>(null);
 
@@ -87,6 +89,7 @@ export default function App() {
         projects={f.config.projects}
         activeId={f.activeProjectId}
         liveByProject={f.liveByProject}
+        projectStatus={f.projectStatus}
         sessions={f.sessions}
         sessionsLoading={f.sessionsLoading}
         onSelect={f.selectProject}
@@ -95,6 +98,8 @@ export default function App() {
         onReorder={f.reorderProjects}
         onRefreshSessions={f.refreshSessions}
         onResume={f.resume}
+        onDeleteSession={f.deleteSession}
+        openSessionTerm={f.openSessionTerm}
         onOpenSettings={() => setSettingsOpen(true)}
       />
 
@@ -136,6 +141,7 @@ export default function App() {
                 onStatus={f.setStatus}
                 onOpenPalette={() => setPaletteOpen(true)}
                 onOpenDrawer={openDrawer}
+                onOpenWeb={() => setWebOpen(true)}
               />
             ))
         )}
@@ -172,6 +178,19 @@ export default function App() {
           onResetProject={f.resetBoard}
           onOpenProject={f.selectProject}
           onAddProject={pickFolder}
+        />
+      )}
+
+      {webOpen && (
+        <WebPanel
+          webTabs={f.config.webTabs}
+          onClose={() => setWebOpen(false)}
+          onAdd={f.addWebTab}
+          onRemove={f.removeWebTab}
+          onOpen={f.openTab}
+          onOpenAll={f.openAllWebTabs}
+          onSend={f.sendToWebTab}
+          onBroadcast={f.broadcastToWebTabs}
         />
       )}
 

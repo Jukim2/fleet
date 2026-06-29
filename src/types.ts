@@ -19,6 +19,10 @@ export type Terminal = {
 /** A reusable prompt block. */
 export type Block = { id: string; name: string; text: string };
 
+/** A logged-in web AI site (ChatGPT / Claude.ai / Gemini / ...) opened as its
+ *  own native webview window and driven via JS injection. */
+export type WebTab = { id: string; name: string; url: string };
+
 /**
  * One task on a project's queue board.
  * A task belongs to a lane (`laneTermId` = the terminal that runs it) and may
@@ -66,6 +70,8 @@ export type FleetConfig = {
   blocks: Block[];
   /** projectId -> queue board */
   boards: Record<string, QueueBoard>;
+  /** logged-in web AI sites you can broadcast prompts to */
+  webTabs: WebTab[];
 };
 
 /** Live, non-persisted status of a terminal.
@@ -77,6 +83,8 @@ export type ClaudeSession = {
   id: string;
   summary: string;
   modified: number; // unix seconds
+  /** model id from the first assistant turn (e.g. "claude-opus-4-8"), if known */
+  model?: string | null;
 };
 
 export const emptyConfig: FleetConfig = {
@@ -85,4 +93,5 @@ export const emptyConfig: FleetConfig = {
   layouts: {},
   blocks: [],
   boards: {},
+  webTabs: [],
 };
