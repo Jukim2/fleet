@@ -9,7 +9,29 @@ import { ensureHookInstalled, HookEvent, killSession, sendPrompt } from "../api/
 import { loadConfig, saveConfig } from "../api/config";
 import { closeWebTab, openWebTab, webEval } from "../api/web";
 import { cdpEval, cdpOpen, cdpTargets } from "../api/cdp";
+import { clearPlan, plannerPrompt, readPlan } from "../api/planner";
+import {
+  gitIsRepo,
+  wtAdd,
+  wtCommit,
+  wtHasConflicts,
+  wtMerge,
+  wtMergeContinue,
+  wtRemove,
+  wtSetup,
+  wtFinalize,
+} from "../api/git";
+import { buildWtRun, WtRun } from "../lib/worktree";
 import { buildInjectJs, embedBlocked, isKnownChatSite } from "../lib/webAdapters";
+import { laneLiveTerm } from "../lib/board";
+import {
+  parsePlanDelta,
+  mergePlan,
+  normalizePlan,
+  removeNode,
+  type RunTarget,
+  buildRunBoard,
+} from "../lib/plan";
 import {
   compact,
   firstLeaf,
@@ -28,6 +50,9 @@ import {
   FleetConfig,
   LayoutNode,
   Project,
+  Lane,
+  LaneTarget,
+  Plan,
   QueueBoard,
   QueueTask,
   TaskStatus,
@@ -42,36 +67,66 @@ const uid = () => crypto.randomUUID();
 
 const emptyBoard = (): QueueBoard => ({ running: false, lanes: [], tasks: [] });
 
-/** Remove a lane (terminal) from a board: its tasks plus any deps pointing at them. */
-function dropLane(board: QueueBoard, termId: string): QueueBoard {
-  const removed = new Set(board.tasks.filter((t) => t.laneTermId === termId).map((t) => t.id));
+/** Remove a lane (track) from a board: its tasks plus any deps pointing at them. */
+function dropLane(board: QueueBoard, laneId: string): QueueBoard {
+  const removed = new Set(board.tasks.filter((t) => t.laneId === laneId).map((t) => t.id));
   return {
     ...board,
-    lanes: board.lanes.filter((l) => l !== termId),
+    lanes: board.lanes.filter((l) => l.id !== laneId),
     tasks: board.tasks
-      .filter((t) => t.laneTermId !== termId)
+      .filter((t) => t.laneId !== laneId)
       .map((t) => ({ ...t, deps: t.deps.filter((d) => !removed.has(d)) })),
   };
 }
 
+/** Upgrade a persisted board to the current lane-as-track shape: old boards had
+ *  `lanes: termId[]` and `tasks[].laneTermId`; lanes are now `{id,title,target}`
+ *  objects and tasks reference `laneId`. */
+function upgradeBoard(b: unknown, terminals: Terminal[]): QueueBoard {
+  const raw = b as {
+    running?: boolean;
+    lanes?: unknown[];
+    tasks?: { id: string; laneTermId?: string; laneId?: string; text: string; deps?: string[] }[];
+  };
+  const lanes: Lane[] = (raw.lanes ?? []).map((l) =>
+    typeof l === "string"
+      ? {
+          id: l,
+          title: terminals.find((t) => t.id === l)?.title ?? "터미널",
+          target: { kind: "session", termId: l } as LaneTarget,
+        }
+      : (l as Lane),
+  );
+  const tasks: QueueTask[] = (raw.tasks ?? []).map((t) =>
+    t.laneId !== undefined
+      ? (t as QueueTask)
+      : { id: t.id, laneId: t.laneTermId ?? "", text: t.text, deps: t.deps ?? [] },
+  );
+  return { running: !!raw.running, lanes, tasks };
+}
+
 /**
- * Boards as persisted, upgrading a pre-board config: the old per-terminal
- * `queues` map becomes one lane (with its tasks) under each terminal's project.
+ * Boards as persisted, upgrading old shapes: existing boards are migrated to the
+ * lane-as-track model; a pre-board `queues` map becomes one session lane per
+ * terminal.
  */
 function migrateBoards(c: FleetConfig): Record<string, QueueBoard> {
-  if (c.boards && Object.keys(c.boards).length) return c.boards;
+  const boards: Record<string, QueueBoard> = {};
+  for (const [pid, b] of Object.entries(c.boards ?? {})) boards[pid] = upgradeBoard(b, c.terminals);
+  if (Object.keys(boards).length) return boards;
+
   const legacy = (c as unknown as { queues?: Record<string, { id: string; text: string }[]> })
     .queues;
-  const boards: Record<string, QueueBoard> = {};
   if (!legacy) return boards;
   for (const [termId, items] of Object.entries(legacy)) {
     if (!items?.length) continue;
     const term = c.terminals.find((t) => t.id === termId);
     if (!term) continue;
     const b = boards[term.projectId] ?? emptyBoard();
-    if (!b.lanes.includes(termId)) b.lanes.push(termId);
+    if (!b.lanes.some((l) => l.id === termId))
+      b.lanes.push({ id: termId, title: term.title, target: { kind: "session", termId } });
     for (const it of items)
-      b.tasks.push({ id: it.id ?? uid(), laneTermId: termId, text: it.text, deps: [] });
+      b.tasks.push({ id: it.id ?? uid(), laneId: termId, text: it.text, deps: [] });
     boards[term.projectId] = b;
   }
   return boards;
@@ -86,7 +141,31 @@ export function useFleet() {
   const [focusedPane, setFocusedPane] = useState<Record<string, string>>({});
   /** live per-task run state for boards (absent = pending) */
   const [taskStatus, setTaskStatus] = useState<Record<string, TaskStatus>>({});
+  /** projectId currently having its plan generated (for a spinner), else null */
+  const [planning, setPlanning] = useState<string | null>(null);
+  const genTimer = useRef<number | null>(null);
   const loaded = useRef(false);
+
+  /** live worktree-pipeline runs, keyed by projectId (non-persisted) */
+  const [wtRuns, setWtRuns] = useState<Record<string, WtRun>>({});
+  const wtRunsRef = useRef(wtRuns);
+  wtRunsRef.current = wtRuns;
+  /** transient note shown in the plan view (e.g. "not a git repo") */
+  const [wtMsg, setWtMsg] = useState<Record<string, string>>({});
+  /** per-step orchestration flags for the wt runner */
+  const wtSent = useRef<Record<string, boolean>>({});
+  const wtAwait = useRef<Record<string, boolean>>({});
+  const wtTick = useRef(false); // re-entrancy lock for the async runner tick
+  const wtFinal = useRef<Record<string, boolean>>({}); // finalize-once guard
+  const setWtRun = (projectId: string, run: WtRun | null) => {
+    setWtRuns((r) => {
+      const next = { ...r };
+      if (run) next[projectId] = run;
+      else delete next[projectId];
+      wtRunsRef.current = next;
+      return next;
+    });
+  };
 
   const configRef = useRef(config);
   configRef.current = config;
@@ -133,6 +212,10 @@ export function useFleet() {
   // --- load / persist ---
   useEffect(() => {
     loadConfig().then((c) => {
+      // Worktree-run sessions are ephemeral (their cwd is a worktree that gets
+      // pruned). Drop any that lingered from a previous session so we don't try
+      // to respawn into a missing directory.
+      c.terminals = c.terminals.filter((t) => !(t.cwd && t.cwd.includes("/.fleet/wt/")));
       const valid = new Set(c.terminals.map((t) => t.id));
       const layouts: Record<string, LayoutNode | null> = {};
       const focus: Record<string, string> = {};
@@ -144,7 +227,9 @@ export function useFleet() {
         if (lay) focus[p.id] = firstLeaf(lay).id;
       }
       const boards = migrateBoards(c);
-      setConfig({ ...c, layouts, boards });
+      const plans: Record<string, Plan> = {};
+      for (const [pid, p] of Object.entries(c.plans ?? {})) plans[pid] = normalizePlan(p);
+      setConfig({ ...c, layouts, boards, plans });
       setFocusedPane(focus);
       const first = c.projects[0]?.id ?? null;
       setActiveProjectId(first);
@@ -301,13 +386,31 @@ export function useFleet() {
     }));
   const closeTerm = (projectId: string, termId: string) => {
     killSession(termId);
-    delete activeTask.current[termId];
     setConfig((c) => {
       const terminals = c.terminals.filter((t) => t.id !== termId);
-      // Drop this terminal's lane from the board (and any tasks depending on it).
+      // Drop board lanes tied to this terminal: session lanes are removed (with
+      // their tasks); spawn lanes that ran in it are unbound so they can respawn.
       const boards = { ...c.boards };
       const board = boards[projectId];
-      if (board) boards[projectId] = dropLane(board, termId);
+      if (board) {
+        let b = board;
+        const sessionLaneIds = b.lanes
+          .filter((l) => l.target.kind === "session" && l.target.termId === termId)
+          .map((l) => l.id);
+        for (const lid of sessionLaneIds) {
+          delete activeTask.current[lid];
+          b = dropLane(b, lid);
+        }
+        b = {
+          ...b,
+          lanes: b.lanes.map((l) => {
+            if (l.boundTermId !== termId) return l;
+            delete activeTask.current[l.id];
+            return { ...l, boundTermId: undefined };
+          }),
+        };
+        boards[projectId] = b;
+      }
       // Drop the closed terminal's pane (its sibling collapses up — no empty pane).
       let layout = normalize(c.layouts[projectId], new Set(terminals.map((t) => t.id)));
       // If that left no panes but other terminals remain, show one instead of a blank stage.
@@ -461,21 +564,27 @@ export function useFleet() {
       boards: { ...c.boards, [projectId]: fn(c.boards[projectId] ?? emptyBoard()) },
     }));
 
-  const addLane = (projectId: string, termId: string) =>
-    patchBoard(projectId, (b) =>
-      b.lanes.includes(termId) ? b : { ...b, lanes: [...b.lanes, termId] },
-    );
-  const removeLane = (projectId: string, termId: string) => {
-    delete activeTask.current[termId];
+  /** Add a lane (track): either bound to an existing terminal, or a spawn track
+   *  that creates its own session when first run. */
+  const addLane = (projectId: string, target: LaneTarget, title: string) =>
+    patchBoard(projectId, (b) => {
+      if (
+        target.kind === "session" &&
+        b.lanes.some((l) => l.target.kind === "session" && l.target.termId === target.termId)
+      )
+        return b; // that terminal is already a lane
+      return { ...b, lanes: [...b.lanes, { id: uid(), title, target }] };
+    });
+  const removeLane = (projectId: string, laneId: string) => {
+    delete activeTask.current[laneId];
     const board = configRef.current.boards[projectId];
-    if (board) for (const t of board.tasks) if (t.laneTermId === termId) setTaskStat(t.id, null);
-    patchBoard(projectId, (b) => dropLane(b, termId));
+    if (board) for (const t of board.tasks) if (t.laneId === laneId) setTaskStat(t.id, null);
+    patchBoard(projectId, (b) => dropLane(b, laneId));
   };
-  const addTask = (projectId: string, termId: string, text: string) =>
+  const addTask = (projectId: string, laneId: string, text: string) =>
     patchBoard(projectId, (b) => ({
       ...b,
-      lanes: b.lanes.includes(termId) ? b.lanes : [...b.lanes, termId],
-      tasks: [...b.tasks, { id: uid(), laneTermId: termId, text, deps: [] } as QueueTask],
+      tasks: [...b.tasks, { id: uid(), laneId, text, deps: [] } as QueueTask],
     }));
   const removeTask = (projectId: string, taskId: string) => {
     setTaskStat(taskId, null);
@@ -502,20 +611,259 @@ export function useFleet() {
       for (const t of b.tasks) delete next[t.id];
       taskStatusRef.current = next;
       setTaskStatus(next);
-      for (const termId of b.lanes) delete activeTask.current[termId];
+      for (const lane of b.lanes) delete activeTask.current[lane.id];
     }
     setBoardRunning(projectId, false);
   };
 
-  const dispatchTask = (termId: string, task: QueueTask) => {
+  /** Create the session a spawn lane needs (a hidden terminal that mounts and
+   *  runs claude/shell), bind it to the lane, and return its id. */
+  const spawnLaneTerminal = (projectId: string, lane: Lane): string => {
+    const startup = lane.target.kind === "spawn" ? lane.target.startup : "claude";
+    const id = uid();
+    const term: Terminal = { id, projectId, title: lane.title || "Claude", startup };
+    setConfig((c) => ({ ...c, terminals: [...c.terminals, term] }));
+    patchBoard(projectId, (b) => ({
+      ...b,
+      lanes: b.lanes.map((l) => (l.id === lane.id ? { ...l, boundTermId: id } : l)),
+    }));
+    return id;
+  };
+
+  /** Dispatch a task into its lane's resolved terminal. Keyed by lane id. */
+  const dispatchTask = (laneId: string, termId: string, task: QueueTask) => {
     sendPrompt(termId, task.text);
-    awaiting.current[termId] = true;
-    activeTask.current[termId] = task.id;
+    awaiting.current[laneId] = true;
+    activeTask.current[laneId] = task.id;
     setTaskStat(task.id, "running");
     window.setTimeout(() => {
-      awaiting.current[termId] = false;
+      awaiting.current[laneId] = false;
     }, 6000);
   };
+
+  // --- plan (request → auto-decomposed graph → run selection) ---
+  const removePlan = (projectId: string) =>
+    setConfig((c) => {
+      const plans = { ...c.plans };
+      delete plans[projectId];
+      return { ...c, plans };
+    });
+  /** Toggle collapse for any plan node (theme or feature) by id. The view passes
+   *  the current effective state so the first toggle always flips what's shown. */
+  const toggleCollapsed = (projectId: string, nodeId: string, current: boolean) =>
+    setConfig((c) => {
+      const plan = c.plans[projectId];
+      if (!plan) return c;
+      const collapsed = { ...(plan.collapsed ?? {}) };
+      collapsed[nodeId] = !current;
+      return { ...c, plans: { ...c.plans, [projectId]: { ...plan, collapsed } } };
+    });
+  /** Persist a step's completion into the plan so done-state accumulates in the
+   *  graph across runs/restarts (live taskStatus is in-memory only). No-op for
+   *  board tasks that aren't plan steps. */
+  const markStepDone = (projectId: string, stepId: string) =>
+    setConfig((c) => {
+      const plan = c.plans[projectId];
+      if (!plan || plan.completed?.[stepId] || !plan.steps.some((s) => s.id === stepId)) return c;
+      return {
+        ...c,
+        plans: {
+          ...c.plans,
+          [projectId]: { ...plan, completed: { ...(plan.completed ?? {}), [stepId]: true } },
+        },
+      };
+    });
+  // --- manual plan editing (add / rename / delete nodes by hand) ---
+  const editPlan = (projectId: string, fn: (p: Plan) => Plan) =>
+    setConfig((c) => {
+      const cur = c.plans[projectId] ?? { themes: [], features: [], steps: [] };
+      return { ...c, plans: { ...c.plans, [projectId]: fn(cur) } };
+    });
+  const addTheme = (projectId: string, title = "새 테마") =>
+    editPlan(projectId, (p) => ({ ...p, themes: [...p.themes, { id: uid(), title }] }));
+  const addFeature = (projectId: string, themeId: string, title = "새 기능") =>
+    editPlan(projectId, (p) => ({ ...p, features: [...p.features, { id: uid(), themeId, title }] }));
+  const addStep = (projectId: string, featureId: string, title = "새 단계") =>
+    editPlan(projectId, (p) => ({
+      ...p,
+      steps: [...p.steps, { id: uid(), featureId, title, prompt: "", deps: [] }],
+    }));
+  const renameNode = (projectId: string, id: string, title: string) =>
+    editPlan(projectId, (p) => ({
+      ...p,
+      themes: p.themes.map((t) => (t.id === id ? { ...t, title } : t)),
+      features: p.features.map((f) => (f.id === id ? { ...f, title } : f)),
+      steps: p.steps.map((s) => (s.id === id ? { ...s, title } : s)),
+    }));
+  const editStep = (projectId: string, id: string, patch: { title?: string; prompt?: string }) =>
+    editPlan(projectId, (p) => ({
+      ...p,
+      steps: p.steps.map((s) => (s.id === id ? { ...s, ...patch } : s)),
+    }));
+  const removePlanNode = (projectId: string, id: string) =>
+    editPlan(projectId, (p) => removeNode(p, id));
+
+  /** Merge a freshly-read .fleet/plan.json into the project's persistent graph. */
+  const mergeRawPlan = (projectId: string, raw: string | null): boolean => {
+    const delta = raw ? parsePlanDelta(raw) : null;
+    if (!delta) return false;
+    setConfig((c) => ({
+      ...c,
+      plans: { ...c.plans, [projectId]: mergePlan(c.plans[projectId], delta) },
+    }));
+    return true;
+  };
+
+  /** Create a visible terminal (in the focused pane) and return its id. */
+  const spawnVisibleTerminal = (projectId: string, startup: string, title: string): string => {
+    const id = uid();
+    const term: Terminal = { id, projectId, title, startup };
+    setConfig((c) => ({ ...c, terminals: [...c.terminals, term] }));
+    const focus = focusOf(projectId);
+    if (focus) patchLayout(projectId, (lay) => (lay ? setLeafTerm(lay, focus, id) : newLeaf(id)));
+    else {
+      const leaf = newLeaf(id);
+      patchLayout(projectId, () => leaf);
+      setFocusedPane((fp) => ({ ...fp, [projectId]: leaf.id }));
+    }
+    return id;
+  };
+
+  /** Load an existing .fleet/plan.json from disk and merge it into the plan. */
+  const loadPlan = async (projectId: string): Promise<boolean> => {
+    const project = configRef.current.projects.find((p) => p.id === projectId);
+    if (!project) return false;
+    const raw = await readPlan(project.path).catch(() => null);
+    return mergeRawPlan(projectId, raw);
+  };
+
+  /** Ask a planner Claude to decompose `goal` into .fleet/plan.json, then load it. */
+  const requestPlan = (projectId: string, goal: string) => {
+    const project = configRef.current.projects.find((p) => p.id === projectId);
+    if (!project || !goal.trim()) return;
+    const cwd = project.path;
+    if (genTimer.current) window.clearInterval(genTimer.current);
+    setPlanning(projectId);
+    clearPlan(cwd).catch(() => {});
+    // Planner runs in acceptEdits mode so it can write .fleet/plan.json without
+    // a manual permission Enter — it only reads the repo and writes one file.
+    const termId = spawnVisibleTerminal(projectId, "claude --permission-mode acceptEdits", "Planner");
+    let sent = false;
+    let tries = 0;
+    const stop = () => {
+      if (genTimer.current) {
+        window.clearInterval(genTimer.current);
+        genTimer.current = null;
+      }
+      setPlanning(null);
+    };
+    genTimer.current = window.setInterval(async () => {
+      tries++;
+      if (!sent) {
+        // wait for the planner session to come up, then send the planner prompt
+        if (statusesRef.current[termId] === "idle") {
+          const existingThemes = (configRef.current.plans[projectId]?.themes ?? []).map((t) => t.title);
+          sendPrompt(termId, plannerPrompt(goal, existingThemes));
+          sent = true;
+          tries = 0;
+        } else if (tries > 45) {
+          stop(); // ~90s and claude never became ready
+        }
+        return;
+      }
+      const raw = await readPlan(cwd).catch(() => null);
+      if (mergeRawPlan(projectId, raw)) {
+        stop();
+      } else if (tries > 150) {
+        stop(); // ~5min timeout
+      }
+    }, 2000);
+  };
+
+  /** Run a selection of plan steps. Worktree mode → the git pipeline runner;
+   *  otherwise project them onto the board engine. */
+  const runSteps = (projectId: string, stepIds: string[], target: RunTarget) => {
+    const plan = configRef.current.plans[projectId];
+    if (!plan || !stepIds.length) return;
+    if (target.worktree) {
+      startWtRun(projectId, stepIds, !!target.auto);
+      return;
+    }
+    const termTitle = (id: string) =>
+      configRef.current.terminals.find((t) => t.id === id)?.title ?? "세션";
+    const { lanes, tasks } = buildRunBoard(plan, stepIds, target, termTitle);
+    const next = { ...taskStatusRef.current };
+    for (const id of stepIds) delete next[id];
+    taskStatusRef.current = next;
+    setTaskStatus(next);
+    for (const lane of lanes) delete activeTask.current[lane.id];
+    patchBoard(projectId, () => ({ running: true, lanes, tasks }));
+  };
+
+  // --- worktree pipeline ---
+  /** Create a hidden session bound to a specific cwd (a git worktree dir). */
+  const spawnWorktreeTerminal = (projectId: string, startup: string, title: string, cwd: string) => {
+    const id = uid();
+    const term: Terminal = { id, projectId, title, startup, cwd };
+    setConfig((c) => ({ ...c, terminals: [...c.terminals, term] }));
+    return id;
+  };
+  /** Place an existing terminal into the project's focused pane so it's visible. */
+  const revealTerm = (projectId: string, termId: string) => {
+    setVisited((v) => ({ ...v, [projectId]: true }));
+    const focus = focusOf(projectId);
+    if (focus) patchLayout(projectId, (lay) => (lay ? setLeafTerm(lay, focus, termId) : newLeaf(termId)));
+    else {
+      const leaf = newLeaf(termId);
+      patchLayout(projectId, () => leaf);
+      setFocusedPane((fp) => ({ ...fp, [projectId]: leaf.id }));
+    }
+  };
+
+  const RESOLVE_PROMPT =
+    "이 git 워크트리에 병합 충돌(conflict)이 있어. 충돌난 파일들을 올바르게 통합해서 해결해줘. " +
+    "기존 동작이 깨지지 않게 신경 쓰고, 파일 변경만 저장하면 돼 (commit은 Fleet이 마무리할게).";
+
+  /** Start a worktree-pipeline run for the selected steps. */
+  const startWtRun = async (projectId: string, stepIds: string[], auto: boolean) => {
+    const project = configRef.current.projects.find((p) => p.id === projectId);
+    const plan = configRef.current.plans[projectId];
+    if (!project || !plan) return;
+    if (wtRunsRef.current[projectId]) {
+      setWtMsg((m) => ({ ...m, [projectId]: "이미 실행 중인 worktree 파이프라인이 있어요." }));
+      return;
+    }
+    const isRepo = await gitIsRepo(project.path).catch(() => false);
+    if (!isRepo) {
+      setWtMsg((m) => ({ ...m, [projectId]: "이 폴더는 git 저장소가 아니라 worktree 모드를 쓸 수 없어요." }));
+      return;
+    }
+    setWtMsg((m) => ({ ...m, [projectId]: "" }));
+    const slug = uid().slice(0, 6);
+    const run = buildWtRun(projectId, project.path, plan, stepIds, auto, slug);
+    try {
+      await wtSetup(run.cwd, run.integDir, run.branch);
+    } catch (e) {
+      setWtMsg((m) => ({ ...m, [projectId]: `통합 브랜치 생성 실패: ${String(e)}` }));
+      return;
+    }
+    setWtRun(projectId, run);
+  };
+
+  /** Stop a run: kill its sessions and drop the live state. Worktrees/branches
+   *  are left on disk (the integration branch holds progress) — user-owned. */
+  const stopWtRun = (projectId: string) => {
+    const run = wtRunsRef.current[projectId];
+    if (!run) return;
+    for (const s of run.steps) {
+      if (s.termId) closeTerm(projectId, s.termId);
+      if (s.resolveTermId) closeTerm(projectId, s.resolveTermId);
+    }
+    setWtRun(projectId, null);
+  };
+  const clearWtMsg = (projectId: string) => setWtMsg((m) => ({ ...m, [projectId]: "" }));
+  /** Reveal a step's live session in a pane (for watching progress). */
+  const showWtStep = (projectId: string, termId: string) => revealTerm(projectId, termId);
 
   // --- Claude Code hook bridge ---
   // Install hooks + ask for notification permission once, then listen for the
@@ -583,29 +931,224 @@ export function useFleet() {
       for (const projectId of Object.keys(cfg.boards)) {
         const board = cfg.boards[projectId];
         if (!board?.running) continue;
-        for (const termId of board.lanes) {
+        for (const lane of board.lanes) {
+          const laneId = lane.id;
+          const termId = laneLiveTerm(lane);
           // The lane's running task is done when its terminal returns to idle.
-          const active = activeTask.current[termId];
+          const active = activeTask.current[laneId];
           if (active) {
-            if (sts[termId] === "idle" && !awaiting.current[termId]) {
+            if (termId && sts[termId] === "idle" && !awaiting.current[laneId]) {
               setTaskStat(active, "done");
-              delete activeTask.current[termId];
+              markStepDone(projectId, active);
+              delete activeTask.current[laneId];
             } else {
               continue; // still working on this lane's task
             }
           }
-          if (sts[termId] !== "idle" || awaiting.current[termId]) continue;
           const tstat = taskStatusRef.current;
           const head = board.tasks.find(
-            (t) => t.laneTermId === termId && tstat[t.id] !== "done" && tstat[t.id] !== "running",
+            (t) => t.laneId === laneId && tstat[t.id] !== "done" && tstat[t.id] !== "running",
           );
-          if (head && head.deps.every((d) => tstat[d] === "done")) dispatchTask(termId, head);
+          if (!head || !head.deps.every((d) => tstat[d] === "done")) continue;
+          if (!termId) {
+            // Spawn lane that hasn't started yet → create its session, then wait
+            // for it to come up on a later tick.
+            if (lane.target.kind === "spawn" && !lane.boundTermId) spawnLaneTerminal(projectId, lane);
+            continue;
+          }
+          if (sts[termId] !== "idle" || awaiting.current[laneId]) continue;
+          dispatchTask(laneId, termId, head);
         }
         // Stop the board once every task has completed.
         if (board.tasks.length && board.tasks.every((t) => taskStatusRef.current[t.id] === "done"))
           setBoardRunning(projectId, false);
       }
     }, 1000);
+    return () => window.clearInterval(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Worktree pipeline runner: drives each step through its lifecycle
+  //   pending → (deps merged) → running → committing → merging → done
+  //                                                   ↘ conflict → resolving → done
+  // Merges into the integration branch are serialized (one at a time) so the
+  // integration worktree never sees concurrent merges. The tick is async + locked.
+  useEffect(() => {
+    const tickWt = async () => {
+      if (wtTick.current) return;
+      const pids = Object.keys(wtRunsRef.current);
+      if (!pids.length) return;
+      wtTick.current = true;
+      try {
+        for (const projectId of pids) {
+          const run = wtRunsRef.current[projectId];
+          if (!run) continue;
+          const sts = statusesRef.current;
+          const steps = run.steps.map((s) => ({ ...s }));
+          const doneIds = new Set(steps.filter((s) => s.phase === "done").map((s) => s.stepId));
+          let busyMerge = steps.some((s) =>
+            ["committing", "merging", "resolving"].includes(s.phase),
+          );
+          let changed = false;
+          const stopped = (id?: string) => !!id && sts[id] === "stopped";
+
+          for (const step of steps) {
+            if (step.phase === "pending") {
+              if (step.deps.every((d) => doneIds.has(d))) {
+                try {
+                  await wtAdd(run.cwd, step.dir, step.branch, run.branch);
+                } catch (e) {
+                  step.phase = "error";
+                  step.note = String(e);
+                  changed = true;
+                  continue;
+                }
+                const startup = run.auto ? "claude --dangerously-skip-permissions" : "claude";
+                step.termId = spawnWorktreeTerminal(projectId, startup, `▶ ${step.title}`, step.dir);
+                step.phase = "running";
+                step.note = "세션 시작";
+                wtSent.current[step.stepId] = false;
+                changed = true;
+              }
+            } else if (step.phase === "running" && step.termId) {
+              if (stopped(step.termId)) {
+                step.phase = "error";
+                step.note = "세션 종료됨";
+                changed = true;
+                continue;
+              }
+              const st = sts[step.termId];
+              if (!wtSent.current[step.stepId]) {
+                if (st === "idle") {
+                  sendPrompt(step.termId, step.prompt);
+                  wtSent.current[step.stepId] = true;
+                  wtAwait.current[step.stepId] = true;
+                  window.setTimeout(() => (wtAwait.current[step.stepId] = false), 8000);
+                  step.note = "작업 진행";
+                  changed = true;
+                }
+              } else if (st === "idle" && !wtAwait.current[step.stepId] && !busyMerge) {
+                busyMerge = true;
+                step.phase = "committing";
+                step.note = "커밋 중";
+                changed = true;
+                try {
+                  await wtCommit(step.dir, `[plan] ${step.title}`);
+                  step.phase = "merging";
+                  step.note = "병합 중";
+                  const res = await wtMerge(run.integDir, step.branch, `Merge: ${step.title}`);
+                  if (res.status === "ok") {
+                    await wtRemove(run.cwd, step.dir);
+                    step.phase = "done";
+                    step.note = "";
+                    doneIds.add(step.stepId);
+                    markStepDone(projectId, step.stepId);
+                    if (step.termId) closeTerm(projectId, step.termId);
+                    step.termId = undefined;
+                  } else {
+                    step.resolveTermId = spawnWorktreeTerminal(
+                      projectId,
+                      "claude --dangerously-skip-permissions",
+                      `⚠ ${step.title} 충돌해결`,
+                      run.integDir,
+                    );
+                    step.phase = "resolving";
+                    step.note = "충돌 해결 중";
+                    wtSent.current[step.stepId + ":r"] = false;
+                  }
+                } catch (e) {
+                  step.phase = "error";
+                  step.note = String(e);
+                }
+              }
+            } else if (step.phase === "resolving" && step.resolveTermId) {
+              if (stopped(step.resolveTermId)) {
+                step.phase = "error";
+                step.note = "해결 세션 종료됨";
+                changed = true;
+                continue;
+              }
+              const st = sts[step.resolveTermId];
+              const rk = step.stepId + ":r";
+              if (!wtSent.current[rk]) {
+                if (st === "idle") {
+                  sendPrompt(step.resolveTermId, RESOLVE_PROMPT);
+                  wtSent.current[rk] = true;
+                  wtAwait.current[rk] = true;
+                  window.setTimeout(() => (wtAwait.current[rk] = false), 8000);
+                  changed = true;
+                }
+              } else if (st === "idle" && !wtAwait.current[rk]) {
+                try {
+                  const conf = await wtHasConflicts(run.integDir);
+                  if (!conf) {
+                    await wtMergeContinue(run.integDir);
+                    await wtRemove(run.cwd, step.dir);
+                    step.phase = "done";
+                    step.note = "";
+                    doneIds.add(step.stepId);
+                    markStepDone(projectId, step.stepId);
+                    if (step.resolveTermId) closeTerm(projectId, step.resolveTermId);
+                    if (step.termId) closeTerm(projectId, step.termId);
+                    step.resolveTermId = undefined;
+                    step.termId = undefined;
+                  } else {
+                    step.phase = "error";
+                    step.note = "충돌이 남아있어요 — 직접 해결 필요";
+                    if (step.resolveTermId) revealTerm(projectId, step.resolveTermId);
+                  }
+                } catch (e) {
+                  step.phase = "error";
+                  step.note = String(e);
+                }
+                changed = true;
+              }
+            }
+          }
+
+          if (changed && wtRunsRef.current[projectId]) setWtRun(projectId, { ...run, steps });
+
+          // Whole run finished cleanly → auto-merge the integration branch into
+          // the current branch, then clear the run so the graph shows the tidy,
+          // completed plan (completion is persisted in plan.completed).
+          const allDone = steps.length > 0 && steps.every((s) => s.phase === "done");
+          const anyErr = steps.some((s) => s.phase === "error");
+          if (allDone && !anyErr && !wtFinal.current[projectId]) {
+            wtFinal.current[projectId] = true;
+            try {
+              const res = await wtFinalize(
+                run.cwd,
+                run.integDir,
+                run.branch,
+                `Merge plan ${run.branch}`,
+              );
+              if (res.status === "ok")
+                setWtMsg((m) => ({
+                  ...m,
+                  [projectId]: `✅ 플랜 완료 · ${run.branch}를 현재 브랜치에 병합했어요.`,
+                }));
+              else if (res.status === "dirty")
+                setWtMsg((m) => ({
+                  ...m,
+                  [projectId]: `플랜 완료. 단, 작업트리에 커밋 안 된 변경이 있어 최종 병합을 건너뛰었어요 — 정리 후 ${run.branch}를 수동 병합하세요.`,
+                }));
+              else
+                setWtMsg((m) => ({
+                  ...m,
+                  [projectId]: `플랜 완료. 최종 병합에서 충돌이 나 중단했어요 — ${run.branch}를 직접 병합해주세요.`,
+                }));
+            } catch (e) {
+              setWtMsg((m) => ({ ...m, [projectId]: `최종 병합 실패: ${String(e)}` }));
+            }
+            setWtRun(projectId, null);
+            delete wtFinal.current[projectId];
+          }
+        }
+      } finally {
+        wtTick.current = false;
+      }
+    };
+    const timer = window.setInterval(() => void tickWt(), 1200);
     return () => window.clearInterval(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -702,6 +1245,23 @@ export function useFleet() {
     setTaskDeps,
     toggleBoardRunning,
     resetBoard,
+    planning,
+    requestPlan,
+    loadPlan,
+    runSteps,
+    toggleCollapsed,
+    addTheme,
+    addFeature,
+    addStep,
+    renameNode,
+    editStep,
+    removePlanNode,
+    wtRuns,
+    wtMsg,
+    stopWtRun,
+    clearWtMsg,
+    showWtStep,
+    removePlan,
     resume,
     deleteSession,
   };

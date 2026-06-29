@@ -7,7 +7,10 @@ import Drawer from "./features/drawer/Drawer";
 import QueueBoard from "./features/board/QueueBoard";
 import SettingsPanel from "./features/settings/SettingsPanel";
 import WebPanel from "./features/web/WebPanel";
+import Dashboard from "./features/dashboard/Dashboard";
+import PlanView from "./features/plan/PlanView";
 import { ensureHookInstalled } from "./api/pty";
+import { wtProgress } from "./lib/worktree";
 import { checkForUpdate, UpdateAvailable } from "./api/system";
 import { useFleet } from "./hooks/useFleet";
 
@@ -16,6 +19,8 @@ export default function App() {
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [boardOpen, setBoardOpen] = useState(false);
+  const [dashOpen, setDashOpen] = useState(false);
+  const [planOpen, setPlanOpen] = useState(false);
   const [webOpen, setWebOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [launchUpdate, setLaunchUpdate] = useState<UpdateAvailable | null>(null);
@@ -142,6 +147,9 @@ export default function App() {
                 onOpenPalette={() => setPaletteOpen(true)}
                 onOpenDrawer={openDrawer}
                 onOpenWeb={() => setWebOpen(true)}
+                onOpenDashboard={() => setDashOpen(true)}
+                onOpenPlan={() => setPlanOpen(true)}
+                wtActive={f.wtRuns[p.id] ? wtProgress(f.wtRuns[p.id]) : undefined}
               />
             ))
         )}
@@ -166,9 +174,9 @@ export default function App() {
           boards={f.config.boards}
           allTerminals={f.config.terminals}
           onClose={() => setBoardOpen(false)}
-          onAddLane={(tid) => f.addLane(activeProject.id, tid)}
-          onRemoveLane={(tid) => f.removeLane(activeProject.id, tid)}
-          onAddTask={(tid, text) => f.addTask(activeProject.id, tid, text)}
+          onAddLane={(target, title) => f.addLane(activeProject.id, target, title)}
+          onRemoveLane={(laneId) => f.removeLane(activeProject.id, laneId)}
+          onAddTask={(laneId, text) => f.addTask(activeProject.id, laneId, text)}
           onRemoveTask={(taskId) => f.removeTask(activeProject.id, taskId)}
           onSetDeps={(taskId, deps) => f.setTaskDeps(activeProject.id, taskId, deps)}
           onAddBlock={(text) =>
@@ -178,6 +186,44 @@ export default function App() {
           onResetProject={f.resetBoard}
           onOpenProject={f.selectProject}
           onAddProject={pickFolder}
+        />
+      )}
+
+      {planOpen && activeProject && (
+        <PlanView
+          project={activeProject}
+          plan={f.config.plans[activeProject.id]}
+          taskStatus={f.taskStatus}
+          statuses={f.statuses}
+          terminals={f.config.terminals.filter((t) => t.projectId === activeProject.id)}
+          planning={f.planning === activeProject.id}
+          onRequestPlan={(goal) => f.requestPlan(activeProject.id, goal)}
+          onLoadPlan={() => f.loadPlan(activeProject.id)}
+          onRunSteps={(stepIds, target) => f.runSteps(activeProject.id, stepIds, target)}
+          onToggleCollapse={(nodeId, current) => f.toggleCollapsed(activeProject.id, nodeId, current)}
+          onRemovePlan={() => f.removePlan(activeProject.id)}
+          onAddTheme={() => f.addTheme(activeProject.id)}
+          onAddFeature={(themeId) => f.addFeature(activeProject.id, themeId)}
+          onAddStep={(featureId) => f.addStep(activeProject.id, featureId)}
+          onRenameNode={(id, title) => f.renameNode(activeProject.id, id, title)}
+          onEditStep={(id, patch) => f.editStep(activeProject.id, id, patch)}
+          onRemoveNode={(id) => f.removePlanNode(activeProject.id, id)}
+          wtRun={f.wtRuns[activeProject.id]}
+          wtMsg={f.wtMsg[activeProject.id]}
+          onStopWtRun={() => f.stopWtRun(activeProject.id)}
+          onShowStep={(termId) => f.showWtStep(activeProject.id, termId)}
+          onClearWtMsg={() => f.clearWtMsg(activeProject.id)}
+          onClose={() => setPlanOpen(false)}
+        />
+      )}
+
+      {dashOpen && activeProject && activeBoard && (
+        <Dashboard
+          project={activeProject}
+          board={activeBoard}
+          taskStatus={f.taskStatus}
+          statuses={f.statuses}
+          onClose={() => setDashOpen(false)}
         />
       )}
 

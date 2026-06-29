@@ -2,6 +2,7 @@ import { useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
   Block,
+  LaneTarget,
   Project,
   QueueBoard as Board,
   QueueTask,
@@ -9,6 +10,7 @@ import {
   Terminal,
   TermStatus,
 } from "../../types";
+import { laneLiveTerm } from "../../lib/board";
 import "./board.css";
 
 type Rect = { x: number; y: number; w: number; h: number };
@@ -57,9 +59,9 @@ export default function QueueBoard({
   boards: Record<string, Board>;
   allTerminals: Terminal[];
   onClose: () => void;
-  onAddLane: (termId: string) => void;
-  onRemoveLane: (termId: string) => void;
-  onAddTask: (termId: string, text: string) => void;
+  onAddLane: (target: LaneTarget, title: string) => void;
+  onRemoveLane: (laneId: string) => void;
+  onAddTask: (laneId: string, text: string) => void;
   onRemoveTask: (taskId: string) => void;
   onSetDeps: (taskId: string, deps: string[]) => void;
   onAddBlock: (text: string) => void;
@@ -81,10 +83,22 @@ export default function QueueBoard({
     [board.tasks],
   );
   const laneIndex = useMemo(
-    () => Object.fromEntries(board.lanes.map((l, i) => [l, i])),
+    () => Object.fromEntries(board.lanes.map((l, i) => [l.id, i])),
     [board.lanes],
   );
-  const available = terminals.filter((t) => !board.lanes.includes(t.id));
+  /** lane id → display title (lane's own title, falling back to its terminal). */
+  const laneTitleById = useMemo(
+    () =>
+      Object.fromEntries(
+        board.lanes.map((l) => [l.id, l.title || termsById[laneLiveTerm(l) ?? ""]?.title || "트랙"]),
+      ),
+    [board.lanes, termsById],
+  );
+  // Terminals not already bound to a session lane (offer them as new lanes).
+  const usedTerm = new Set(
+    board.lanes.flatMap((l) => (l.target.kind === "session" ? [l.target.termId] : [])),
+  );
+  const available = terminals.filter((t) => !usedTerm.has(t.id));
   const done = board.tasks.filter((t) => taskStatus[t.id] === "done").length;
 
   // does task `a` (transitively) depend on task `b`? — used to forbid dependency cycles
@@ -132,8 +146,8 @@ export default function QueueBoard({
     const a = rects[fromId];
     const b = rects[toId];
     if (!a || !b) return null;
-    const fromCol = laneIndex[tasksById[fromId]?.laneTermId] ?? 0;
-    const toCol = laneIndex[tasksById[toId]?.laneTermId] ?? 0;
+    const fromCol = laneIndex[tasksById[fromId]?.laneId] ?? 0;
+    const toCol = laneIndex[tasksById[toId]?.laneId] ?? 0;
     let x1: number, x2: number;
     if (toCol > fromCol) {
       x1 = a.x + a.w;
@@ -252,21 +266,23 @@ export default function QueueBoard({
           </svg>
 
           <div className="qb-lanes" ref={scrollRef}>
-            {board.lanes.map((termId) => {
-              const term = termsById[termId];
-              const laneTasks = board.tasks.filter((t) => t.laneTermId === termId);
+            {board.lanes.map((lane) => {
+              const liveTerm = laneLiveTerm(lane);
+              const laneTasks = board.tasks.filter((t) => t.laneId === lane.id);
+              const spawn = lane.target.kind === "spawn" && !lane.boundTermId;
               return (
                 <Lane
-                  key={termId}
-                  title={term?.title ?? "(닫힌 터미널)"}
-                  termStatus={statuses[termId] ?? "stopped"}
+                  key={lane.id}
+                  title={laneTitleById[lane.id]}
+                  termStatus={liveTerm ? statuses[liveTerm] ?? "stopped" : "stopped"}
+                  pending={spawn}
                   tasks={laneTasks}
                   taskStatus={taskStatus}
                   tasksById={tasksById}
-                  termsById={termsById}
+                  laneTitleById={laneTitleById}
                   cardRefs={cardRefs}
                   blocks={blocks}
-                  onAddTask={(text) => onAddTask(termId, text)}
+                  onAddTask={(text) => onAddTask(lane.id, text)}
                   onAddBlock={onAddBlock}
                   onRemoveTask={onRemoveTask}
                   onOpenPicker={(taskId, el) =>
@@ -274,26 +290,36 @@ export default function QueueBoard({
                       p?.taskId === taskId ? null : { taskId, anchor: el.getBoundingClientRect() },
                     )
                   }
-                  onRemoveLane={() => onRemoveLane(termId)}
+                  onRemoveLane={() => onRemoveLane(lane.id)}
                 />
               );
             })}
 
-            {available.length > 0 && (
-              <div className="qb-addlane">
-                <p className="qb-hint">＋ 레인 추가</p>
-                {available.map((t) => (
-                  <button key={t.id} className="qb-lanepick" onClick={() => onAddLane(t.id)}>
-                    <span className={`qb-dot ${statuses[t.id] ?? "stopped"}`} />
-                    {t.title}
-                  </button>
-                ))}
-              </div>
-            )}
-
-            {board.lanes.length === 0 && available.length === 0 && (
-              <p className="qb-hint">먼저 이 프로젝트에 터미널을 만들어 주세요.</p>
-            )}
+            <div className="qb-addlane">
+              <p className="qb-hint">＋ 트랙 추가</p>
+              <button
+                className="qb-lanepick"
+                onClick={() => onAddLane({ kind: "spawn", startup: "claude" }, "Claude")}
+              >
+                ◇ 새 Claude 세션
+              </button>
+              <button
+                className="qb-lanepick"
+                onClick={() => onAddLane({ kind: "spawn", startup: "" }, "셸")}
+              >
+                › 새 셸
+              </button>
+              {available.map((t) => (
+                <button
+                  key={t.id}
+                  className="qb-lanepick"
+                  onClick={() => onAddLane({ kind: "session", termId: t.id }, t.title)}
+                >
+                  <span className={`qb-dot ${statuses[t.id] ?? "stopped"}`} />
+                  {t.title}
+                </button>
+              ))}
+            </div>
           </div>
         </div>
         )}
@@ -304,7 +330,7 @@ export default function QueueBoard({
           state={picker}
           board={board}
           tasksById={tasksById}
-          termsById={termsById}
+          laneTitleById={laneTitleById}
           dependsOn={dependsOn}
           onToggle={(depId) => toggleDep(picker.taskId, depId)}
           onClose={() => setPicker(null)}
@@ -371,16 +397,17 @@ function Overview({
                   />
                 </div>
                 <div className="qb-ov-lanes">
-                  {board.lanes.map((termId) => {
-                    const laneTasks = board.tasks.filter((t) => t.laneTermId === termId);
+                  {board.lanes.map((lane) => {
+                    const laneTasks = board.tasks.filter((t) => t.laneId === lane.id);
                     if (laneTasks.length === 0) return null;
                     const running = laneTasks.find((t) => taskStatus[t.id] === "running");
                     const ld = laneTasks.filter((t) => taskStatus[t.id] === "done").length;
                     const state = running ? "running" : ld === laneTasks.length ? "done" : "pending";
+                    const name = lane.title || termsById[laneLiveTerm(lane) ?? ""]?.title || "트랙";
                     return (
-                      <div key={termId} className="qb-ov-lane">
+                      <div key={lane.id} className="qb-ov-lane">
                         <span className={`qb-tstat ${state}`} />
-                        <span className="qb-ov-lname">{termsById[termId]?.title ?? "?"}</span>
+                        <span className="qb-ov-lname">{name}</span>
                         <span className="qb-ov-ltask">
                           {running ? running.text : `${ld}/${laneTasks.length}`}
                         </span>
@@ -432,7 +459,7 @@ function DepPicker({
   state,
   board,
   tasksById,
-  termsById,
+  laneTitleById,
   dependsOn,
   onToggle,
   onClose,
@@ -440,7 +467,7 @@ function DepPicker({
   state: PickerState;
   board: Board;
   tasksById: Record<string, QueueTask>;
-  termsById: Record<string, Terminal>;
+  laneTitleById: Record<string, string>;
   dependsOn: (a: string, b: string) => boolean;
   onToggle: (depId: string) => void;
   onClose: () => void;
@@ -465,12 +492,12 @@ function DepPicker({
       >
         <div className="qb-pick-head">선행 작업 선택 — 먼저 끝나야 시작</div>
         {others.length === 0 && <div className="qb-pick-empty">다른 작업이 없습니다.</div>}
-        {board.lanes.map((lt) => {
-          const opts = others.filter((o) => o.laneTermId === lt);
+        {board.lanes.map((lane) => {
+          const opts = others.filter((o) => o.laneId === lane.id);
           if (opts.length === 0) return null;
           return (
-            <div key={lt} className="qb-pick-group">
-              <div className="qb-pick-lane">{termsById[lt]?.title ?? "?"}</div>
+            <div key={lane.id} className="qb-pick-group">
+              <div className="qb-pick-lane">{laneTitleById[lane.id]}</div>
               {opts.map((o) => {
                 const checked = task?.deps.includes(o.id) ?? false;
                 const cyclic = !checked && dependsOn(o.id, taskId);
@@ -499,10 +526,11 @@ function DepPicker({
 function Lane({
   title,
   termStatus,
+  pending,
   tasks,
   taskStatus,
   tasksById,
-  termsById,
+  laneTitleById,
   cardRefs,
   blocks,
   onAddTask,
@@ -513,10 +541,11 @@ function Lane({
 }: {
   title: string;
   termStatus: TermStatus;
+  pending: boolean;
   tasks: QueueTask[];
   taskStatus: Record<string, TaskStatus>;
   tasksById: Record<string, QueueTask>;
-  termsById: Record<string, Terminal>;
+  laneTitleById: Record<string, string>;
   cardRefs: React.MutableRefObject<Record<string, HTMLDivElement | null>>;
   blocks: Block[];
   onAddTask: (text: string) => void;
@@ -540,8 +569,9 @@ function Lane({
         <span className="qb-lane-title" title={title}>
           {title}
         </span>
+        {pending && <span className="qb-lane-tag">실행 시 생성</span>}
         <span className="qb-lane-n">{tasks.length}</span>
-        <button className="qb-lane-x" onClick={onRemoveLane} title="레인 제거">
+        <button className="qb-lane-x" onClick={onRemoveLane} title="트랙 제거">
           ✕
         </button>
       </div>
@@ -572,7 +602,7 @@ function Lane({
                 <div className="qb-deps">
                   {t.deps.map((d) => {
                     const dt = tasksById[d];
-                    const lane = dt ? termsById[dt.laneTermId]?.title : "?";
+                    const lane = dt ? laneTitleById[dt.laneId] : "?";
                     return (
                       <span key={d} className="qb-chip" title={dt?.text}>
                         ← {lane}: {dt ? dt.text.slice(0, 16) : "(삭제됨)"}

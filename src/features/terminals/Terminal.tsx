@@ -54,6 +54,19 @@ export default function Terminal({
     fitRef.current = fit;
     fit.fit();
 
+    // Claude's TUI enables mouse tracking, so by default xterm forwards wheel
+    // events to the app instead of scrolling its own scrollback — the terminal
+    // feels "stuck". When we're in the normal buffer (Claude doesn't use the
+    // alternate screen), intercept the wheel and scroll xterm's history
+    // ourselves; otherwise fall through to default handling.
+    term.attachCustomWheelEventHandler((e) => {
+      if (term.buffer.active.type === "normal" && term.modes.mouseTrackingMode !== "none") {
+        term.scrollLines(Math.sign(e.deltaY) * 3);
+        return false; // don't forward this wheel event to claude
+      }
+      return true;
+    });
+
     spawnSession(id, cwd, term.cols, term.rows, startup).catch((e) =>
       term.writeln(`\r\n[fleet] spawn error: ${e}`),
     );

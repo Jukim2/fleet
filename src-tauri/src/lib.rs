@@ -15,6 +15,7 @@ mod bridge;
 mod cdp;
 mod config;
 mod diagnostics;
+mod git;
 mod pty;
 mod sessions;
 mod webtabs;
@@ -54,6 +55,8 @@ pub fn run() {
             sessions::delete_claude_session,
             config::load_config,
             config::save_config,
+            config::read_plan,
+            config::clear_plan,
             bridge::ensure_hook_installed,
             bridge::web_enqueue,
             diagnostics::app_diagnostics,
@@ -66,6 +69,15 @@ pub fn run() {
             cdp::cdp_open,
             cdp::cdp_targets,
             cdp::cdp_eval,
+            git::git_is_repo,
+            git::wt_setup,
+            git::wt_add,
+            git::wt_commit,
+            git::wt_merge,
+            git::wt_has_conflicts,
+            git::wt_merge_continue,
+            git::wt_remove,
+            git::wt_finalize,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

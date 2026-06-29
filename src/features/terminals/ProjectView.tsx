@@ -59,6 +59,9 @@ export default function ProjectView({
   onOpenPalette,
   onOpenDrawer,
   onOpenWeb,
+  onOpenDashboard,
+  onOpenPlan,
+  wtActive,
 }: {
   project: Project;
   terminals: Term[];
@@ -82,6 +85,9 @@ export default function ProjectView({
   onOpenPalette: () => void;
   onOpenDrawer: (section: "blocks" | "queue") => void;
   onOpenWeb: () => void;
+  onOpenDashboard: () => void;
+  onOpenPlan: () => void;
+  wtActive?: { done: number; total: number; active: number; error: number };
 }) {
   const stageRef = useRef<HTMLDivElement>(null);
   const [panes, setPanes] = useState<PaneRect[]>([]);
@@ -241,6 +247,21 @@ export default function ProjectView({
           <button className="tool" onClick={() => onOpenDrawer("queue")} title="큐">
             큐
           </button>
+          <button
+            className={`tool ${wtActive ? "tool-live" : ""}`}
+            onClick={onOpenPlan}
+            title="요청 → 단계 분해 → 실행"
+          >
+            플랜
+            {wtActive && (
+              <span className={`tool-badge ${wtActive.error ? "err" : "go"}`}>
+                {wtActive.done}/{wtActive.total}
+              </span>
+            )}
+          </button>
+          <button className="tool" onClick={onOpenDashboard} title="진행 대시보드 (흐름·진행도)">
+            대시보드
+          </button>
           <button className="tool" onClick={onOpenWeb} title="웹 AI 탭 (동시 전송)">
             웹
           </button>
@@ -338,7 +359,7 @@ export default function ProjectView({
             >
               <Terminal
                 id={t.id}
-                cwd={project.path}
+                cwd={t.cwd ?? project.path}
                 startup={t.startup}
                 visible={shown}
                 onStatus={onStatus}

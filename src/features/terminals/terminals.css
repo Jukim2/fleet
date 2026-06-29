@@ -57,6 +57,35 @@
   border-color: var(--accent);
   color: var(--text);
 }
+.tool-live {
+  border-color: var(--accent);
+  color: var(--text);
+}
+.tool-badge {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 0 6px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  color: #fff;
+}
+.tool-badge.go {
+  background: var(--accent);
+  animation: tool-badge-pulse 1.3s ease-in-out infinite;
+}
+.tool-badge.err {
+  background: #ef4444;
+}
+@keyframes tool-badge-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.45;
+  }
+}
 
 /* new terminal buttons */
 .newterm-btn {

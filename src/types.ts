@@ -14,6 +14,9 @@ export type Terminal = {
   title: string;
   /** "" = plain shell, "claude" = new claude, "claude --resume <id>" = resume */
   startup: string;
+  /** working directory; defaults to the project path. Worktree-run sessions set
+   *  this to their git worktree directory. */
+  cwd?: string;
 };
 
 /** A reusable prompt block. */
@@ -24,6 +27,36 @@ export type Block = { id: string; name: string; text: string };
 export type WebTab = { id: string; name: string; url: string };
 
 /**
+ * A plan is ONE persistent, evolving graph per project — not a per-request list.
+ * Three levels: theme (큰 주제, e.g. "UI 개선") → feature (기능) → step (단계).
+ * New requests are decomposed and MERGED into this graph: matching themes are
+ * extended, new ones appended. Steps are the executable units; a step's `prompt`
+ * is what a Claude session receives, and `deps` are other step ids that must
+ * finish first (cross-feature allowed).
+ */
+export type PlanTheme = { id: string; title: string };
+export type PlanFeature = { id: string; themeId: string; title: string };
+export type PlanStep = {
+  id: string;
+  featureId: string;
+  title: string;
+  /** the instruction a Claude session is given to perform this step */
+  prompt: string;
+  /** other step ids that must finish first */
+  deps: string[];
+};
+export type Plan = {
+  themes: PlanTheme[];
+  features: PlanFeature[];
+  steps: PlanStep[];
+  /** per-node (theme/feature id) UI collapse state; absent → auto (collapse when done) */
+  collapsed?: Record<string, boolean>;
+  /** step ids that have finished — persisted so completion accumulates in the
+   *  graph across runs/restarts (live `taskStatus` is in-memory only) */
+  completed?: Record<string, true>;
+};
+
+/**
  * One task on a project's queue board.
  * A task belongs to a lane (`laneTermId` = the terminal that runs it) and may
  * depend on other tasks (`deps`): it won't start until every dep is `done`.
@@ -32,18 +65,37 @@ export type WebTab = { id: string; name: string; url: string };
  */
 export type QueueTask = {
   id: string;
-  laneTermId: string;
+  /** the lane (track) this task runs in — references `Lane.id` */
+  laneId: string;
   text: string;
   deps: string[];
 };
 
-/** Per-project queue board: ordered lanes (terminals) + their tasks. */
+/** How a lane gets its session: an existing terminal, or a freshly spawned one. */
+export type LaneTarget =
+  | { kind: "session"; termId: string }
+  | { kind: "spawn"; startup: string }; // "claude" | "" (shell) | "claude --resume <id>"
+
+/**
+ * A lane (track) on the board. Unlike before, a lane is not necessarily an
+ * existing terminal — a `spawn` lane creates its session when first run, and
+ * remembers it in `boundTermId`. `session` lanes are tied to an existing terminal.
+ */
+export type Lane = {
+  id: string;
+  title: string;
+  target: LaneTarget;
+  /** the live terminal this lane runs in (spawn lanes fill this on first run) */
+  boundTermId?: string;
+};
+
+/** Per-project queue board: ordered lanes (tracks) + their tasks. */
 export type QueueBoard = {
   /** when true, the runner auto-dispatches eligible tasks */
   running: boolean;
-  /** participating terminal ids, in display order (one lane each) */
-  lanes: string[];
-  /** all tasks; a lane's order = this array's order filtered by laneTermId */
+  /** lanes/tracks in display order */
+  lanes: Lane[];
+  /** all tasks; a lane's order = this array's order filtered by laneId */
   tasks: QueueTask[];
 };
 
@@ -72,6 +124,8 @@ export type FleetConfig = {
   boards: Record<string, QueueBoard>;
   /** logged-in web AI sites you can broadcast prompts to */
   webTabs: WebTab[];
+  /** projectId -> auto-generated plan */
+  plans: Record<string, Plan>;
 };
 
 /** Live, non-persisted status of a terminal.
@@ -94,4 +148,5 @@ export const emptyConfig: FleetConfig = {
   blocks: [],
   boards: {},
   webTabs: [],
+  plans: {},
 };
