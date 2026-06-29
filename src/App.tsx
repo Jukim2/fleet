@@ -7,7 +7,6 @@ import Drawer from "./features/drawer/Drawer";
 import QueueBoard from "./features/board/QueueBoard";
 import SettingsPanel from "./features/settings/SettingsPanel";
 import WebPanel from "./features/web/WebPanel";
-import Dashboard from "./features/dashboard/Dashboard";
 import PlanView from "./features/plan/PlanView";
 import { ensureHookInstalled } from "./api/pty";
 import { wtProgress } from "./lib/worktree";
@@ -19,7 +18,6 @@ export default function App() {
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [boardOpen, setBoardOpen] = useState(false);
-  const [dashOpen, setDashOpen] = useState(false);
   const [planOpen, setPlanOpen] = useState(false);
   const [webOpen, setWebOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -147,7 +145,6 @@ export default function App() {
                 onOpenPalette={() => setPaletteOpen(true)}
                 onOpenDrawer={openDrawer}
                 onOpenWeb={() => setWebOpen(true)}
-                onOpenDashboard={() => setDashOpen(true)}
                 onOpenPlan={() => setPlanOpen(true)}
                 wtActive={f.wtRuns[p.id] ? wtProgress(f.wtRuns[p.id]) : undefined}
               />
@@ -220,16 +217,6 @@ export default function App() {
           onShowStep={(termId) => f.showWtStep(activeProject.id, termId)}
           onClearWtMsg={() => f.clearWtMsg(activeProject.id)}
           onClose={() => setPlanOpen(false)}
-        />
-      )}
-
-      {dashOpen && activeProject && activeBoard && (
-        <Dashboard
-          project={activeProject}
-          board={activeBoard}
-          taskStatus={f.taskStatus}
-          statuses={f.statuses}
-          onClose={() => setDashOpen(false)}
         />
       )}
 

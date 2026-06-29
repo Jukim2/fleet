@@ -897,13 +897,45 @@
   color: var(--text);
   padding-top: 8px;
 }
-.plan-rd-effort select {
-  background: var(--bg);
+/* unified themed dropdowns — strip native OS chrome, custom chevron */
+.plan-rd-effort select,
+.plan-rd-sel,
+.plan-rd-row select {
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  appearance: none;
+  background-color: var(--surface);
+  background-image: url("data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20width='10'%20height='6'%20viewBox='0%200%2010%206'%20fill='none'%3E%3Cpath%20d='M1%201l4%204%204-4'%20stroke='%238b8b93'%20stroke-width='1.5'%20stroke-linecap='round'%20stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 9px center;
   color: var(--text);
   border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 3px 6px;
+  border-radius: 7px;
+  padding: 5px 26px 5px 9px;
   font-size: 12px;
+  font-family: inherit;
+  line-height: 1.3;
+  cursor: pointer;
+  transition: border-color 0.12s, background-color 0.12s;
+}
+.plan-rd-effort select:hover,
+.plan-rd-sel:hover,
+.plan-rd-row select:hover {
+  border-color: var(--accent);
+}
+.plan-rd-effort select:focus-visible,
+.plan-rd-sel:focus-visible,
+.plan-rd-row select:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 30%, transparent);
+}
+/* native option popup — themed where the OS honors it */
+.plan-rd-effort select option,
+.plan-rd-sel option,
+.plan-rd-row select option {
+  background: var(--surface);
+  color: var(--text);
 }
 .plan-rd-effort-hint {
   color: var(--muted);
@@ -912,12 +944,6 @@
 }
 .plan-rd-sel {
   margin-left: auto;
-  background: var(--bg);
-  color: var(--text);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 3px 6px;
-  font-size: 12px;
   max-width: 180px;
 }
 .plan-rd-perstep {
@@ -947,14 +973,6 @@
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-}
-.plan-rd-row select {
-  background: var(--bg);
-  color: var(--text);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 3px 6px;
-  font-size: 12px;
 }
 .plan-rd-actions {
   display: flex;

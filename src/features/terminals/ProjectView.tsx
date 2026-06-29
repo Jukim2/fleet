@@ -59,7 +59,6 @@ export default function ProjectView({
   onOpenPalette,
   onOpenDrawer,
   onOpenWeb,
-  onOpenDashboard,
   onOpenPlan,
   wtActive,
 }: {
@@ -85,7 +84,6 @@ export default function ProjectView({
   onOpenPalette: () => void;
   onOpenDrawer: (section: "blocks" | "queue") => void;
   onOpenWeb: () => void;
-  onOpenDashboard: () => void;
   onOpenPlan: () => void;
   wtActive?: { done: number; total: number; active: number; error: number };
 }) {
@@ -258,9 +256,6 @@ export default function ProjectView({
                 {wtActive.done}/{wtActive.total}
               </span>
             )}
-          </button>
-          <button className="tool" onClick={onOpenDashboard} title="진행 대시보드 (흐름·진행도)">
-            대시보드
           </button>
           <button className="tool" onClick={onOpenWeb} title="웹 AI 탭 (동시 전송)">
             웹
