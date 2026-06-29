@@ -5,7 +5,7 @@ import {
   requestPermission,
   sendNotification,
 } from "@tauri-apps/plugin-notification";
-import { ensureHookInstalled, HookEvent, killSession, sendPrompt } from "../api/pty";
+import { ensureHookInstalled, HookEvent, killSession, sendPrompt, writePty } from "../api/pty";
 import { loadConfig, saveConfig } from "../api/config";
 import { closeWebTab, openWebTab, webEval } from "../api/web";
 import { cdpEval, cdpOpen, cdpTargets } from "../api/cdp";
@@ -21,7 +21,7 @@ import {
   wtSetup,
   wtFinalize,
 } from "../api/git";
-import { buildWtRun, WtRun } from "../lib/worktree";
+import { buildWtRun, WtLogEntry, WtRun } from "../lib/worktree";
 import { buildInjectJs, embedBlocked, isKnownChatSite } from "../lib/webAdapters";
 import { laneLiveTerm } from "../lib/board";
 import {
@@ -31,6 +31,7 @@ import {
   removeNode,
   type RunTarget,
   buildRunBoard,
+  claudeStartup,
 } from "../lib/plan";
 import {
   compact,
@@ -62,6 +63,7 @@ import {
   emptyConfig,
 } from "../types";
 import { useClaudeSessions } from "./useClaudeSessions";
+import { importSessionTranscript } from "../api/claude";
 
 const uid = () => crypto.randomUUID();
 
@@ -150,13 +152,30 @@ export function useFleet() {
   const [wtRuns, setWtRuns] = useState<Record<string, WtRun>>({});
   const wtRunsRef = useRef(wtRuns);
   wtRunsRef.current = wtRuns;
+  /** the most recently finished/stopped run per project, kept for review until
+   *  the next run starts or the user dismisses it (non-persisted). */
+  const [wtLastRun, setWtLastRuns] = useState<Record<string, WtRun>>({});
+  const setWtLastRun = (projectId: string, run: WtRun) =>
+    setWtLastRuns((m) => ({ ...m, [projectId]: run }));
+  const clearWtLastRun = (projectId: string) =>
+    setWtLastRuns((m) => {
+      const next = { ...m };
+      delete next[projectId];
+      return next;
+    });
   /** transient note shown in the plan view (e.g. "not a git repo") */
   const [wtMsg, setWtMsg] = useState<Record<string, string>>({});
   /** per-step orchestration flags for the wt runner */
-  const wtSent = useRef<Record<string, boolean>>({});
-  const wtAwait = useRef<Record<string, boolean>>({});
+  const wtSent = useRef<Record<string, boolean>>({}); // prompt has been typed in
+  const wtAwait = useRef<Record<string, boolean>>({}); // post-send grace (conflict-resolve phase)
+  const wtStarted = useRef<Record<string, boolean>>({}); // claude confirmed working (busy)
+  const wtSpawnAt = useRef<Record<string, number>>({}); // when the session was launched
+  const wtSendAt = useRef<Record<string, number>>({}); // when the prompt was last submitted
+  const wtTries = useRef<Record<string, number>>({}); // submit-CR retry count
   const wtTick = useRef(false); // re-entrancy lock for the async runner tick
   const wtFinal = useRef<Record<string, boolean>>({}); // finalize-once guard
+  const wtLastLog = useRef<Record<string, string>>({}); // last logged phase summary
+  const wtTranscript = useRef<Record<string, string>>({}); // termId -> claude transcript path
   const setWtRun = (projectId: string, run: WtRun | null) => {
     setWtRuns((r) => {
       const next = { ...r };
@@ -786,7 +805,7 @@ export function useFleet() {
     const plan = configRef.current.plans[projectId];
     if (!plan || !stepIds.length) return;
     if (target.worktree) {
-      startWtRun(projectId, stepIds, !!target.auto);
+      startWtRun(projectId, stepIds, !!target.auto, target.effort);
       return;
     }
     const termTitle = (id: string) =>
@@ -820,33 +839,94 @@ export function useFleet() {
     }
   };
 
+  /** Reveal a terminal in its OWN pane (tile), so parallel worktree steps are all
+   *  visible AND get a real PTY size at once — instead of replacing the focused
+   *  pane (which would push earlier steps to 0-size and stall them). Fills an
+   *  empty pane if one exists, else splits the first pane (alternating dir). */
+  const revealTermTiled = (projectId: string, termId: string) => {
+    setVisited((v) => ({ ...v, [projectId]: true }));
+    patchLayout(projectId, (lay) => {
+      if (!lay) return newLeaf(termId);
+      const ls = leaves(lay);
+      if (ls.some((l) => l.termId === termId)) return lay; // already shown
+      const empty = ls.find((l) => !l.termId);
+      if (empty) return setLeafTerm(lay, empty.id, termId);
+      const dir = ls.length % 2 === 0 ? "col" : "row";
+      return splitLeafWith(lay, ls[0].id, dir, newLeaf(termId));
+    });
+  };
+
+  /** Drive claude's TUI: type the prompt, then submit with a *separate* carriage
+   *  return shortly after. Sending text+CR in one burst lets claude absorb the CR
+   *  into the (bracketed) paste, so the text lands in the box but never submits. */
+  const submitPrompt = (termId: string, text: string) => {
+    writePty(termId, text).catch(() => {});
+    window.setTimeout(() => writePty(termId, "\r").catch(() => {}), 250);
+  };
+
+  /** Copy a finished worktree step's claude transcript into the project's session
+   *  folder so it shows up in the resume list (the step's changes are merged, so
+   *  it can be continued from the project root). */
+  const importStepSession = (projectId: string, termId?: string) => {
+    if (!termId) return;
+    const transcript = wtTranscript.current[termId];
+    if (!transcript) return;
+    const project = configRef.current.projects.find((p) => p.id === projectId);
+    if (!project) return;
+    importSessionTranscript(project.path, transcript)
+      .then(() => refreshSessions())
+      .catch((e) => console.warn("[wt] import transcript failed", e));
+  };
+
   const RESOLVE_PROMPT =
     "이 git 워크트리에 병합 충돌(conflict)이 있어. 충돌난 파일들을 올바르게 통합해서 해결해줘. " +
     "기존 동작이 깨지지 않게 신경 쓰고, 파일 변경만 저장하면 돼 (commit은 Fleet이 마무리할게).";
 
   /** Start a worktree-pipeline run for the selected steps. */
-  const startWtRun = async (projectId: string, stepIds: string[], auto: boolean) => {
+  const startWtRun = async (
+    projectId: string,
+    stepIds: string[],
+    auto: boolean,
+    effort?: RunTarget["effort"],
+  ) => {
+    console.log("[wt] startWtRun", { projectId, stepIds, auto, effort });
     const project = configRef.current.projects.find((p) => p.id === projectId);
     const plan = configRef.current.plans[projectId];
-    if (!project || !plan) return;
+    if (!project || !plan) {
+      console.warn("[wt] no project/plan");
+      return;
+    }
     if (wtRunsRef.current[projectId]) {
       setWtMsg((m) => ({ ...m, [projectId]: "이미 실행 중인 worktree 파이프라인이 있어요." }));
       return;
     }
-    const isRepo = await gitIsRepo(project.path).catch(() => false);
+    let isRepo: boolean;
+    try {
+      isRepo = await gitIsRepo(project.path);
+    } catch (e) {
+      console.error("[wt] gitIsRepo invoke failed", e);
+      setWtMsg((m) => ({
+        ...m,
+        [projectId]: `git 명령을 호출하지 못했어요 (${String(e)}). 앱을 재빌드/재시작해 보세요.`,
+      }));
+      return;
+    }
     if (!isRepo) {
       setWtMsg((m) => ({ ...m, [projectId]: "이 폴더는 git 저장소가 아니라 worktree 모드를 쓸 수 없어요." }));
       return;
     }
-    setWtMsg((m) => ({ ...m, [projectId]: "" }));
     const slug = uid().slice(0, 6);
-    const run = buildWtRun(projectId, project.path, plan, stepIds, auto, slug);
+    const run = { ...buildWtRun(projectId, project.path, plan, stepIds, auto, slug, effort), startedAt: Date.now() };
+    clearWtLastRun(projectId); // a new run supersedes the archived one
+    setWtMsg((m) => ({ ...m, [projectId]: `worktree 파이프라인 시작… (${run.steps.length}단계, ${run.branch})` }));
     try {
       await wtSetup(run.cwd, run.integDir, run.branch);
     } catch (e) {
+      console.error("[wt] wtSetup failed", e);
       setWtMsg((m) => ({ ...m, [projectId]: `통합 브랜치 생성 실패: ${String(e)}` }));
       return;
     }
+    console.log("[wt] run created", run.branch, "steps:", run.steps.map((s) => s.title));
     setWtRun(projectId, run);
   };
 
@@ -859,6 +939,14 @@ export function useFleet() {
       if (s.termId) closeTerm(projectId, s.termId);
       if (s.resolveTermId) closeTerm(projectId, s.resolveTermId);
     }
+    // Archive so the activity log survives a manual stop.
+    const stop: WtLogEntry = {
+      at: Date.now(),
+      title: "실행 중지",
+      phase: "final",
+      note: "사용자가 실행을 중지했어요.",
+    };
+    setWtLastRun(projectId, { ...run, log: [...(run.log ?? []), stop] });
     setWtRun(projectId, null);
   };
   const clearWtMsg = (projectId: string) => setWtMsg((m) => ({ ...m, [projectId]: "" }));
@@ -880,6 +968,9 @@ export function useFleet() {
 
   const onHookEvent = (h: HookEvent) => {
     const { termId, event, notificationType } = h;
+    // Remember the claude transcript for this terminal so a finished worktree
+    // step can be imported into the project's resume list.
+    if (h.transcriptPath) wtTranscript.current[termId] = h.transcriptPath;
     let status: TermStatus | null = null;
     if (event === "UserPromptSubmit" || event === "PreToolUse") status = "busy";
     else if (notificationType === "permission_prompt") status = "waiting";
@@ -984,16 +1075,27 @@ export function useFleet() {
           const run = wtRunsRef.current[projectId];
           if (!run) continue;
           const sts = statusesRef.current;
+          // Log phase transitions (not every tick) so the run is traceable.
+          const summary = run.steps
+            .map((s) => `${s.title}:${s.phase}${s.termId ? `(${sts[s.termId] ?? "?"})` : ""}`)
+            .join(" | ");
+          if (wtLastLog.current[projectId] !== summary) {
+            wtLastLog.current[projectId] = summary;
+            console.log("[wt] tick", projectId, summary);
+          }
           const steps = run.steps.map((s) => ({ ...s }));
           const doneIds = new Set(steps.filter((s) => s.phase === "done").map((s) => s.stepId));
-          let busyMerge = steps.some((s) =>
-            ["committing", "merging", "resolving"].includes(s.phase),
-          );
+          const ACTIVE = ["committing", "merging", "resolving"];
+          // Merges into the shared integration worktree must be serialized.
+          let busyMerge = steps.some((s) => ACTIVE.includes(s.phase));
           let changed = false;
+          const now = Date.now();
           const stopped = (id?: string) => !!id && sts[id] === "stopped";
 
           for (const step of steps) {
             if (step.phase === "pending") {
+              // Parallel by design: every step whose deps are merged starts now,
+              // each in its own worktree + tiled pane. Merges stay serialized.
               if (step.deps.every((d) => doneIds.has(d))) {
                 try {
                   await wtAdd(run.cwd, step.dir, step.branch, run.branch);
@@ -1003,12 +1105,19 @@ export function useFleet() {
                   changed = true;
                   continue;
                 }
-                const startup = run.auto ? "claude --dangerously-skip-permissions" : "claude";
+                const startup = claudeStartup(run.auto, run.effort);
                 step.termId = spawnWorktreeTerminal(projectId, startup, `▶ ${step.title}`, step.dir);
+                // Tile into its own pane: visible AND a real PTY size, so several
+                // steps run concurrently without pushing each other to 0-size.
+                revealTermTiled(projectId, step.termId);
                 step.phase = "running";
                 step.note = "세션 시작";
                 wtSent.current[step.stepId] = false;
+                wtStarted.current[step.stepId] = false;
+                wtSpawnAt.current[step.stepId] = now;
+                wtTries.current[step.stepId] = 0;
                 changed = true;
+                console.log("[wt] spawned step", step.title, "→", step.dir);
               }
             } else if (step.phase === "running" && step.termId) {
               if (stopped(step.termId)) {
@@ -1019,44 +1128,75 @@ export function useFleet() {
               }
               const st = sts[step.termId];
               if (!wtSent.current[step.stepId]) {
-                if (st === "idle") {
-                  sendPrompt(step.termId, step.prompt);
+                // Wait for claude to actually boot before typing: a fresh session
+                // reads "idle" off the banner instantly (false-idle). Require a
+                // dwell since spawn so we don't type into the splash screen.
+                if (st === "idle" && now - (wtSpawnAt.current[step.stepId] ?? 0) > 3000) {
+                  console.log("[wt] sending prompt to", step.title);
+                  submitPrompt(step.termId, step.prompt);
                   wtSent.current[step.stepId] = true;
-                  wtAwait.current[step.stepId] = true;
-                  window.setTimeout(() => (wtAwait.current[step.stepId] = false), 8000);
-                  step.note = "작업 진행";
+                  wtSendAt.current[step.stepId] = now;
+                  step.note = "지시 전송";
                   changed = true;
                 }
-              } else if (st === "idle" && !wtAwait.current[step.stepId] && !busyMerge) {
+              } else if (!wtStarted.current[step.stepId]) {
+                // Confirm the prompt actually submitted: claude flips to busy
+                // (UserPromptSubmit/PreToolUse hook). If it's still idle after a
+                // grace window, the CR didn't take — resend a lone CR to submit.
+                if (st === "busy" || st === "waiting") {
+                  wtStarted.current[step.stepId] = true;
+                  step.note = "작업 중";
+                  changed = true;
+                } else if (st === "idle" && now - (wtSendAt.current[step.stepId] ?? 0) > 4000) {
+                  const tries = (wtTries.current[step.stepId] ?? 0) + 1;
+                  wtTries.current[step.stepId] = tries;
+                  if (tries > 3) {
+                    step.phase = "error";
+                    step.note = "세션이 지시를 받지 못했어요 (제출 실패)";
+                    changed = true;
+                  } else {
+                    console.log("[wt] resend CR to", step.title, `(try ${tries})`);
+                    writePty(step.termId, "\r").catch(() => {});
+                    wtSendAt.current[step.stepId] = now;
+                  }
+                }
+              } else if (st === "idle" && !busyMerge) {
+                // Started, then returned to idle → the turn finished → commit+merge.
                 busyMerge = true;
                 step.phase = "committing";
                 step.note = "커밋 중";
                 changed = true;
                 try {
+                  console.log("[wt] commit+merge", step.title);
                   await wtCommit(step.dir, `[plan] ${step.title}`);
                   step.phase = "merging";
                   step.note = "병합 중";
                   const res = await wtMerge(run.integDir, step.branch, `Merge: ${step.title}`);
+                  console.log("[wt] merge result", step.title, res.status);
                   if (res.status === "ok") {
                     await wtRemove(run.cwd, step.dir);
                     step.phase = "done";
                     step.note = "";
                     doneIds.add(step.stepId);
                     markStepDone(projectId, step.stepId);
+                    importStepSession(projectId, step.termId);
                     if (step.termId) closeTerm(projectId, step.termId);
                     step.termId = undefined;
                   } else {
                     step.resolveTermId = spawnWorktreeTerminal(
                       projectId,
-                      "claude --dangerously-skip-permissions",
+                      claudeStartup(true, run.effort),
                       `⚠ ${step.title} 충돌해결`,
                       run.integDir,
                     );
+                    revealTermTiled(projectId, step.resolveTermId);
                     step.phase = "resolving";
                     step.note = "충돌 해결 중";
                     wtSent.current[step.stepId + ":r"] = false;
+                    wtSpawnAt.current[step.stepId + ":r"] = now;
                   }
                 } catch (e) {
+                  console.error("[wt] commit/merge failed", step.title, e);
                   step.phase = "error";
                   step.note = String(e);
                 }
@@ -1071,8 +1211,8 @@ export function useFleet() {
               const st = sts[step.resolveTermId];
               const rk = step.stepId + ":r";
               if (!wtSent.current[rk]) {
-                if (st === "idle") {
-                  sendPrompt(step.resolveTermId, RESOLVE_PROMPT);
+                if (st === "idle" && now - (wtSpawnAt.current[rk] ?? 0) > 3000) {
+                  submitPrompt(step.resolveTermId, RESOLVE_PROMPT);
                   wtSent.current[rk] = true;
                   wtAwait.current[rk] = true;
                   window.setTimeout(() => (wtAwait.current[rk] = false), 8000);
@@ -1088,6 +1228,7 @@ export function useFleet() {
                     step.note = "";
                     doneIds.add(step.stepId);
                     markStepDone(projectId, step.stepId);
+                    importStepSession(projectId, step.termId);
                     if (step.resolveTermId) closeTerm(projectId, step.resolveTermId);
                     if (step.termId) closeTerm(projectId, step.termId);
                     step.resolveTermId = undefined;
@@ -1106,7 +1247,25 @@ export function useFleet() {
             }
           }
 
-          if (changed && wtRunsRef.current[projectId]) setWtRun(projectId, { ...run, steps });
+          if (changed && wtRunsRef.current[projectId]) {
+            // Record every phase transition as a timeline entry so the run is
+            // reviewable: which branch merged, where a conflict happened, errors.
+            const newLogs: WtLogEntry[] = [];
+            for (let i = 0; i < steps.length; i++) {
+              const cur = steps[i];
+              if (run.steps[i].phase !== cur.phase)
+                newLogs.push({
+                  at: now,
+                  title: cur.title,
+                  phase: cur.phase,
+                  from: run.steps[i].phase,
+                  stepId: cur.stepId,
+                  branch: cur.branch,
+                  note: cur.note,
+                });
+            }
+            setWtRun(projectId, { ...run, steps, log: [...(run.log ?? []), ...newLogs] });
+          }
 
           // Whole run finished cleanly → auto-merge the integration branch into
           // the current branch, then clear the run so the graph shows the tidy,
@@ -1115,6 +1274,7 @@ export function useFleet() {
           const anyErr = steps.some((s) => s.phase === "error");
           if (allDone && !anyErr && !wtFinal.current[projectId]) {
             wtFinal.current[projectId] = true;
+            let finalNote = "";
             try {
               const res = await wtFinalize(
                 run.cwd,
@@ -1123,22 +1283,23 @@ export function useFleet() {
                 `Merge plan ${run.branch}`,
               );
               if (res.status === "ok")
-                setWtMsg((m) => ({
-                  ...m,
-                  [projectId]: `✅ 플랜 완료 · ${run.branch}를 현재 브랜치에 병합했어요.`,
-                }));
+                finalNote = `${run.branch}를 현재 브랜치에 병합했어요.`;
               else if (res.status === "dirty")
-                setWtMsg((m) => ({
-                  ...m,
-                  [projectId]: `플랜 완료. 단, 작업트리에 커밋 안 된 변경이 있어 최종 병합을 건너뛰었어요 — 정리 후 ${run.branch}를 수동 병합하세요.`,
-                }));
-              else
-                setWtMsg((m) => ({
-                  ...m,
-                  [projectId]: `플랜 완료. 최종 병합에서 충돌이 나 중단했어요 — ${run.branch}를 직접 병합해주세요.`,
-                }));
+                finalNote = `작업트리에 커밋 안 된 변경이 있어 최종 병합을 건너뛰었어요 — 정리 후 ${run.branch}를 수동 병합하세요.`;
+              else finalNote = `최종 병합에서 충돌이 나 중단했어요 — ${run.branch}를 직접 병합해주세요.`;
+              setWtMsg((m) => ({
+                ...m,
+                [projectId]: res.status === "ok" ? `✅ 플랜 완료 · ${finalNote}` : `플랜 완료. 단, ${finalNote}`,
+              }));
             } catch (e) {
-              setWtMsg((m) => ({ ...m, [projectId]: `최종 병합 실패: ${String(e)}` }));
+              finalNote = `최종 병합 실패: ${String(e)}`;
+              setWtMsg((m) => ({ ...m, [projectId]: finalNote }));
+            }
+            // Archive the finished run (with the final event) for the log panel.
+            const finished = wtRunsRef.current[projectId];
+            if (finished) {
+              const finalEntry: WtLogEntry = { at: now, title: "플랜 완료", phase: "final", note: finalNote };
+              setWtLastRun(projectId, { ...finished, log: [...(finished.log ?? []), finalEntry] });
             }
             setWtRun(projectId, null);
             delete wtFinal.current[projectId];
@@ -1257,6 +1418,8 @@ export function useFleet() {
     editStep,
     removePlanNode,
     wtRuns,
+    wtLastRun,
+    clearWtLastRun,
     wtMsg,
     stopWtRun,
     clearWtMsg,

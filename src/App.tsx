@@ -209,8 +209,10 @@ export default function App() {
           onEditStep={(id, patch) => f.editStep(activeProject.id, id, patch)}
           onRemoveNode={(id) => f.removePlanNode(activeProject.id, id)}
           wtRun={f.wtRuns[activeProject.id]}
+          wtLastRun={f.wtLastRun[activeProject.id]}
           wtMsg={f.wtMsg[activeProject.id]}
           onStopWtRun={() => f.stopWtRun(activeProject.id)}
+          onClearWtLastRun={() => f.clearWtLastRun(activeProject.id)}
           onShowStep={(termId) => f.showWtStep(activeProject.id, termId)}
           onClearWtMsg={() => f.clearWtMsg(activeProject.id)}
           onClose={() => setPlanOpen(false)}

@@ -36,6 +36,10 @@ struct HookEvent {
     term_id: String,
     event: String,
     notification_type: String,
+    /// Claude session id + transcript path from the hook payload — lets Fleet
+    /// surface a worktree step's session in the project's resume list afterward.
+    session_id: String,
+    transcript_path: String,
 }
 
 #[derive(Clone, Serialize)]
@@ -160,16 +164,19 @@ fn handle_hook_conn(mut stream: std::net::TcpStream, app: &AppHandle) {
     if term_id.is_empty() {
         return; // not a Fleet-spawned session
     }
-    let (event, notification_type) = match serde_json::from_slice::<serde_json::Value>(&body) {
-        Ok(v) => (
-            v.get("hook_event_name").and_then(|x| x.as_str()).unwrap_or("").to_string(),
-            v.get("notification_type").and_then(|x| x.as_str()).unwrap_or("").to_string(),
-        ),
-        Err(_) => (String::new(), String::new()),
-    };
+    let (event, notification_type, session_id, transcript_path) =
+        match serde_json::from_slice::<serde_json::Value>(&body) {
+            Ok(v) => (
+                v.get("hook_event_name").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+                v.get("notification_type").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+                v.get("session_id").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+                v.get("transcript_path").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+            ),
+            Err(_) => (String::new(), String::new(), String::new(), String::new()),
+        };
     let _ = app.emit(
         "hook-event",
-        HookEvent { term_id, event, notification_type },
+        HookEvent { term_id, event, notification_type, session_id, transcript_path },
     );
 }
 

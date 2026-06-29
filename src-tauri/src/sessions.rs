@@ -163,6 +163,45 @@ pub fn list_claude_sessions(cwd: String) -> Vec<ClaudeSession> {
     sessions
 }
 
+/// Copy a transcript produced in a worktree step into the project's own Claude
+/// session folder, so a plan run's work shows up in the project's resume list and
+/// can be continued from the project root (the step's changes are already merged
+/// in). `transcript_path` is the absolute `.jsonl` reported by the step's hook.
+/// Returns the session id (file stem) on success. No-op-safe if already imported.
+#[tauri::command]
+pub fn import_session_transcript(project_path: String, transcript_path: String) -> Result<String, String> {
+    let src = std::path::Path::new(&transcript_path);
+    let id = src
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .ok_or("bad transcript path")?
+        .to_string();
+    if !src.exists() {
+        return Err("transcript not found".into());
+    }
+    let home = home_dir().ok_or("no home dir")?;
+    let projects_dir = std::path::Path::new(&home).join(".claude").join("projects");
+    let encoded = encode_project_dir(&project_path);
+    // Reuse the project's existing transcript folder (case-insensitive match for
+    // the Windows drive-letter casing quirk); else create it under the encoded name.
+    let dir = std::fs::read_dir(&projects_dir)
+        .ok()
+        .and_then(|entries| {
+            entries
+                .flatten()
+                .find(|e| e.file_name().to_string_lossy().eq_ignore_ascii_case(&encoded))
+                .map(|e| e.path())
+        })
+        .unwrap_or_else(|| projects_dir.join(&encoded));
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let dest = dir.join(format!("{id}.jsonl"));
+    if dest.exists() {
+        return Ok(id); // already imported
+    }
+    std::fs::copy(src, &dest).map_err(|e| e.to_string())?;
+    Ok(id)
+}
+
 /// Delete a single transcript (`<id>.jsonl`) from the project's Claude folder.
 /// `id` is validated as a bare uuid-style stem so a crafted value can't escape
 /// the directory.

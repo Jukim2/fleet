@@ -75,9 +75,18 @@ fn ensure_ignore(cwd: &str) -> Result<(), String> {
 }
 
 /// Create the integration worktree on a fresh `branch` from current HEAD.
+/// Create the parent directory of a worktree path (git creates the leaf dir, but
+/// not always missing intermediate dirs like `.fleet/wt`).
+fn ensure_parent(dir: &str) {
+    if let Some(parent) = Path::new(dir).parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+}
+
 #[tauri::command]
 pub fn wt_setup(cwd: String, integ_dir: String, branch: String) -> Result<(), String> {
     ensure_ignore(&cwd)?;
+    ensure_parent(&integ_dir);
     let (ok, _o, e) = git_raw(&cwd, &["worktree", "add", "-b", &branch, &integ_dir, "HEAD"])?;
     if ok {
         return Ok(());
@@ -95,6 +104,7 @@ pub fn wt_setup(cwd: String, integ_dir: String, branch: String) -> Result<(), St
 /// (the integration branch tip, which already contains merged dependencies).
 #[tauri::command]
 pub fn wt_add(cwd: String, dir: String, branch: String, base: String) -> Result<(), String> {
+    ensure_parent(&dir);
     let (ok, _o, e) = git_raw(&cwd, &["worktree", "add", "-b", &branch, &dir, &base])?;
     if ok {
         return Ok(());
@@ -147,10 +157,32 @@ pub fn wt_merge(integ_dir: String, branch: String, message: String) -> Result<Me
 }
 
 /// Are there unresolved conflicts in the integration worktree?
+///
+/// We can't just check `git ls-files -u` (unmerged index entries): the resolver
+/// session is told to *edit files only* and leave staging to Fleet, so a fully
+/// resolved tree still shows unmerged index entries until `git add`. The real
+/// question is whether conflict MARKERS remain in the conflicted files' content.
+/// If the markers are gone, it's resolved (just unstaged) — `wt_merge_continue`
+/// will stage + commit it.
 #[tauri::command]
 pub fn wt_has_conflicts(integ_dir: String) -> Result<bool, String> {
-    let out = git(&integ_dir, &["ls-files", "-u"])?;
-    Ok(!out.trim().is_empty())
+    let unmerged = git(&integ_dir, &["diff", "--name-only", "--diff-filter=U"])?;
+    let files: Vec<&str> = unmerged.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
+    if files.is_empty() {
+        return Ok(false);
+    }
+    for f in files {
+        let path = Path::new(&integ_dir).join(f);
+        if let Ok(content) = std::fs::read_to_string(&path) {
+            let has_marker = content.lines().any(|l| {
+                l.starts_with("<<<<<<<") || l.starts_with(">>>>>>>") || l.starts_with("|||||||")
+            });
+            if has_marker {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
 }
 
 /// Finalize an in-progress merge once conflicts are resolved. No-op if the

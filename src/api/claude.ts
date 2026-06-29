@@ -8,3 +8,8 @@ export const listClaudeSessions = (cwd: string) =>
 /** Delete a transcript so it no longer appears in the resume list. */
 export const deleteClaudeSession = (cwd: string, id: string) =>
   invoke<void>("delete_claude_session", { cwd, id });
+
+/** Copy a worktree step's transcript into the project's session folder so it
+ *  appears in the resume list. Returns the session id. */
+export const importSessionTranscript = (projectPath: string, transcriptPath: string) =>
+  invoke<string>("import_session_transcript", { projectPath, transcriptPath });

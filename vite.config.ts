@@ -25,8 +25,11 @@ export default defineConfig(async () => ({
         }
       : undefined,
     watch: {
-      // 3. tell Vite to ignore watching `src-tauri`
-      ignored: ["**/src-tauri/**"],
+      // 3. tell Vite to ignore watching `src-tauri`, plus `.fleet`/`.git` —
+      //    worktree runs create `.fleet/wt/**` inside the project, and when
+      //    Fleet dogfoods its own repo that would otherwise trigger a full
+      //    page reload (wiping live wtRun/terminal state mid-run).
+      ignored: ["**/src-tauri/**", "**/.fleet/**", "**/.git/**"],
     },
   },
 }));

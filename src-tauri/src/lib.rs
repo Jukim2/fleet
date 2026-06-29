@@ -53,6 +53,7 @@ pub fn run() {
             pty::list_sessions,
             sessions::list_claude_sessions,
             sessions::delete_claude_session,
+            sessions::import_session_transcript,
             config::load_config,
             config::save_config,
             config::read_plan,

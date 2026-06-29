@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useState } from "react";
 import { Plan, PlanStep, Project, TaskStatus, Terminal, TermStatus } from "../../types";
 import { gitIsRepo } from "../../api/git";
-import { RunTarget } from "../../lib/plan";
+import { openPath } from "../../api/system";
+import { ClaudeEffort, RunTarget } from "../../lib/plan";
 import { layoutPlan, NODE_H } from "../../lib/planLayout";
-import { PHASE_LABEL, WtRun, WtStep, wtProgress } from "../../lib/worktree";
+import { PHASE_LABEL, WtLogEntry, WtPhase, WtRun, WtStep, wtProgress } from "../../lib/worktree";
 import "./plan.css";
 
 type StepState = "done" | "running" | "ready" | "blocked";
@@ -38,8 +39,10 @@ export default function PlanView({
   onEditStep,
   onRemoveNode,
   wtRun,
+  wtLastRun,
   wtMsg,
   onStopWtRun,
+  onClearWtLastRun,
   onShowStep,
   onClearWtMsg,
   onClose,
@@ -51,8 +54,10 @@ export default function PlanView({
   terminals: Terminal[];
   planning: boolean;
   wtRun?: WtRun;
+  wtLastRun?: WtRun;
   wtMsg?: string;
   onStopWtRun: () => void;
+  onClearWtLastRun: () => void;
   onShowStep: (termId: string) => void;
   onClearWtMsg: () => void;
   onRequestPlan: (goal: string) => void;
@@ -151,7 +156,6 @@ export default function PlanView({
     for (const s of wtRun?.steps ?? []) m[s.stepId] = s;
     return m;
   }, [wtRun]);
-  const wtProg = wtRun ? wtProgress(wtRun) : null;
 
   // inline rename input shared by theme/feature nodes
   const renameInput = (id: string, title: string) => (
@@ -231,28 +235,14 @@ export default function PlanView({
           </div>
         ) : null}
 
-        {/* Worktree run banner */}
-        {wtRun && wtProg && (
-          <div className="plan-wt-banner">
-            <span className={`plan-wt-dot ${wtProg.error ? "err" : wtProg.active ? "go" : "idle"}`} />
-            <span className="plan-wt-label">
-              worktree 실행 · <code>{wtRun.branch}</code>
-            </span>
-            <div className="plan-bar plan-wt-bar">
-              <div
-                className="plan-bar-fill"
-                style={{ width: `${wtProg.total ? (wtProg.done / wtProg.total) * 100 : 0}%` }}
-              />
-            </div>
-            <span className="plan-wt-stat">
-              {wtProg.done}/{wtProg.total}
-              {wtProg.active ? ` · ${wtProg.active} 진행` : ""}
-              {wtProg.error ? ` · ${wtProg.error} 오류` : ""}
-            </span>
-            <button className="btn danger" onClick={onStopWtRun}>
-              중지
-            </button>
-          </div>
+        {/* Worktree run — live banner + activity log, or the last finished run */}
+        {(wtRun ?? wtLastRun) && (
+          <WtLogPanel
+            run={(wtRun ?? wtLastRun)!}
+            live={!!wtRun}
+            onStop={onStopWtRun}
+            onDismiss={onClearWtLastRun}
+          />
         )}
 
         {/* Graph canvas */}
@@ -300,12 +290,19 @@ export default function PlanView({
                   const label = wt ? PHASE_LABEL[wt.phase] : STATE_LABEL[st];
                   const liveTerm = wt?.resolveTermId ?? wt?.termId;
                   const on = sel.has(n.id);
+                  // When running in a worktree, surface its branch + dir so the
+                  // user can see exactly which worktree this step is using.
+                  const tip = wt
+                    ? [wt.note, `브랜치: ${wt.branch}`, `워크트리: ${wt.dir}`]
+                        .filter(Boolean)
+                        .join("\n")
+                    : s.prompt || "(prompt 비어있음 — 더블클릭해 작성)";
                   return (
                     <div
                       key={n.id}
                       className={`plan-node step ${cls} ${on ? "sel" : ""}`}
                       style={{ left: n.x, top: n.y, width: n.w, height: NODE_H }}
-                      title={wt?.note || s.prompt || "(prompt 비어있음 — 더블클릭해 작성)"}
+                      title={tip}
                       onClick={() => toggleStep(n.id)}
                       onDoubleClick={() => setStepEdit(s)}
                     >
@@ -526,11 +523,12 @@ function RunDialog({
   const [perStep, setPerStep] = useState(false);
   const [auto, setAuto] = useState(true);
   const [worktree, setWorktree] = useState(false);
+  const [effort, setEffort] = useState<ClaudeEffort | "">(""); // "" = inherit settings.json
   const [assign, setAssign] = useState<Record<string, string>>({}); // stepId -> "inherit" | "new" | termId
   const wtDisabled = gitRepo === false;
 
   const run = () => {
-    const base = { auto, worktree };
+    const base = { auto, worktree, effort: effort || undefined };
     if (worktree) {
       // worktree mode: each step gets its own worktree regardless of preset
       onRun({ mode: "each-new", ...base });
@@ -677,6 +675,19 @@ function RunDialog({
           <span>자동 승인 — 새 세션을 권한 확인(Enter) 없이 진행</span>
         </label>
 
+        <label className="plan-rd-effort">
+          <span>추론 강도 (effort)</span>
+          <select value={effort} onChange={(e) => setEffort(e.target.value as ClaudeEffort | "")}>
+            <option value="">기본 (settings.json)</option>
+            <option value="low">low</option>
+            <option value="medium">medium</option>
+            <option value="high">high</option>
+            <option value="xhigh">xhigh</option>
+            <option value="max">max</option>
+          </select>
+          <span className="plan-rd-effort-hint">새로 띄우는 세션에만 적용</span>
+        </label>
+
         <div className="plan-rd-actions">
           <button className="btn" onClick={onClose}>
             취소
@@ -686,6 +697,120 @@ function RunDialog({
           </button>
         </div>
       </div>
+    </div>
+  );
+}
+
+// Visual treatment for one log entry, derived from its phase (+ where it came
+// from, to tell a clean merge apart from a conflict-resolved one).
+function logLine(e: WtLogEntry): { icon: string; cls: string; text: string } {
+  switch (e.phase) {
+    case "running":
+      return { icon: "▶", cls: "go", text: "작업 시작" };
+    case "committing":
+      return { icon: "•", cls: "go", text: "커밋" };
+    case "merging":
+      return { icon: "⇗", cls: "go", text: "통합 브랜치에 병합" };
+    case "resolving":
+      return { icon: "⚠", cls: "warn", text: "병합 충돌 — Claude가 해결 중" };
+    case "done":
+      return {
+        icon: "✓",
+        cls: "ok",
+        text: e.from === "resolving" ? "충돌 해결 후 병합 완료" : "병합 완료",
+      };
+    case "error":
+      return { icon: "✕", cls: "err", text: e.note || "오류" };
+    case "final":
+      return { icon: "🏁", cls: "final", text: e.note || "완료" };
+    default:
+      return { icon: "•", cls: "muted", text: PHASE_LABEL[e.phase as WtPhase] ?? "" };
+  }
+}
+
+const fmtTime = (at: number) =>
+  new Date(at).toLocaleTimeString("ko-KR", { hour12: false });
+
+/** Worktree run status + activity timeline. Drives both the live run (with a
+ *  stop button) and the last finished/stopped run (dismissable for review). */
+function WtLogPanel({
+  run,
+  live,
+  onStop,
+  onDismiss,
+}: {
+  run: WtRun;
+  live: boolean;
+  onStop: () => void;
+  onDismiss: () => void;
+}) {
+  const [open, setOpen] = useState(true);
+  const prog = wtProgress(run);
+  const log = run.log ?? [];
+
+  return (
+    <div className="plan-wt-banner">
+      <div className="plan-wt-bar-row">
+        <span className={`plan-wt-dot ${prog.error ? "err" : live && prog.active ? "go" : "idle"}`} />
+        <span className="plan-wt-label">
+          {live ? "worktree 실행" : "지난 실행"} · <code>{run.branch}</code>
+          <button
+            className="plan-wt-open"
+            title={`워크트리 폴더 열기 — ${run.cwd}/.fleet/wt`}
+            onClick={() => openPath(`${run.cwd}/.fleet/wt`)}
+          >
+            📂
+          </button>
+        </span>
+        <div className="plan-bar plan-wt-bar">
+          <div
+            className="plan-bar-fill"
+            style={{ width: `${prog.total ? (prog.done / prog.total) * 100 : 0}%` }}
+          />
+        </div>
+        <span className="plan-wt-stat">
+          {prog.done}/{prog.total}
+          {live && prog.active ? ` · ${prog.active} 진행` : ""}
+          {prog.error ? ` · ${prog.error} 오류` : ""}
+        </span>
+        <button
+          className="plan-wt-toggle"
+          onClick={() => setOpen((o) => !o)}
+          title={open ? "로그 접기" : "로그 펼치기"}
+        >
+          {open ? "▾" : "▸"} 로그{log.length ? ` (${log.length})` : ""}
+        </button>
+        {live ? (
+          <button className="btn danger" onClick={onStop}>
+            중지
+          </button>
+        ) : (
+          <button className="btn" onClick={onDismiss} title="로그 닫기">
+            닫기
+          </button>
+        )}
+      </div>
+
+      {open && (
+        <div className="plan-wt-log">
+          {log.length === 0 ? (
+            <div className="plan-wt-log-empty">아직 기록이 없어요.</div>
+          ) : (
+            log.map((e, i) => {
+              const { icon, cls, text } = logLine(e);
+              return (
+                <div key={i} className={`plan-wt-log-row ${cls}`}>
+                  <span className="plan-wt-log-time">{fmtTime(e.at)}</span>
+                  <span className={`plan-wt-log-icon ${cls}`}>{icon}</span>
+                  {e.phase !== "final" && <span className="plan-wt-log-step">{e.title}</span>}
+                  <span className="plan-wt-log-text">{text}</span>
+                  {e.branch && <code className="plan-wt-log-branch">{e.branch}</code>}
+                </div>
+              );
+            })
+          )}
+        </div>
+      )}
     </div>
   );
 }

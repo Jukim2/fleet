@@ -3,6 +3,7 @@
 // into a dedicated integration branch, in dependency order. The runner lives in
 // useFleet; these are the shapes + the pure builder.
 import { Plan } from "../types";
+import { ClaudeEffort } from "./plan";
 
 export type WtPhase =
   | "pending" // waiting on deps / a free merge slot
@@ -26,6 +27,18 @@ export type WtStep = {
   note?: string; // short status detail / error
 };
 
+/** One timeline entry in a run's activity log. Step-level entries name the step
+ *  + its branch; the run-level finish entry uses phase "final" with no stepId. */
+export type WtLogEntry = {
+  at: number; // epoch ms
+  title: string; // step title, or "플랜 완료" / "실행 중지" for run-level
+  phase: WtPhase | "final";
+  from?: WtPhase; // previous phase (distinguishes clean merge from conflict-resolve)
+  stepId?: string;
+  branch?: string;
+  note?: string; // detail / error message
+};
+
 export type WtRun = {
   projectId: string;
   cwd: string; // repo root (normalized to forward slashes)
@@ -33,6 +46,9 @@ export type WtRun = {
   integDir: string; // integration worktree path
   steps: WtStep[];
   auto: boolean; // launch sessions with --dangerously-skip-permissions
+  effort?: ClaudeEffort; // reasoning effort for step sessions (--effort)
+  log?: WtLogEntry[]; // activity timeline (which branch merged when, conflicts, errors)
+  startedAt?: number; // when the run was created (epoch ms)
 };
 
 export const PHASE_LABEL: Record<WtPhase, string> = {
@@ -54,6 +70,7 @@ export function buildWtRun(
   stepIds: string[],
   auto: boolean,
   slug: string,
+  effort?: ClaudeEffort,
 ): WtRun {
   const cwd = cwdRaw.replace(/\\/g, "/").replace(/\/+$/, "");
   const selSet = new Set(stepIds);
@@ -75,6 +92,8 @@ export function buildWtRun(
     integDir: `${wtRoot}/_integ-${slug}`,
     steps,
     auto,
+    effort,
+    log: [],
   };
 }
 

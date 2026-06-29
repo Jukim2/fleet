@@ -67,6 +67,30 @@ export default function Terminal({
       return true;
     });
 
+    // Clipboard: xterm doesn't copy/paste on its own. Wire Ctrl/Cmd+C (copy the
+    // selection — falls through to ^C interrupt when nothing is selected) and
+    // Ctrl/Cmd+V (paste via term.paste so claude's bracketed-paste mode is
+    // respected). Shift variants (Ctrl+Shift+C/V) always copy/paste.
+    term.attachCustomKeyEventHandler((e) => {
+      if (e.type !== "keydown") return true;
+      const mod = e.ctrlKey || e.metaKey;
+      if (!mod) return true;
+      const key = e.key.toLowerCase();
+      if (key === "c" && (e.shiftKey || term.hasSelection())) {
+        const sel = term.getSelection();
+        if (sel) navigator.clipboard?.writeText(sel).catch(() => {});
+        return false; // handled — don't also send ^C
+      }
+      if (key === "v") {
+        navigator.clipboard
+          ?.readText()
+          .then((t) => t && term.paste(t))
+          .catch(() => {});
+        return false;
+      }
+      return true;
+    });
+
     spawnSession(id, cwd, term.cols, term.rows, startup).catch((e) =>
       term.writeln(`\r\n[fleet] spawn error: ${e}`),
     );

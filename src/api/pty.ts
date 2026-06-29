@@ -24,4 +24,10 @@ export const killSession = (id: string) => invoke<void>("kill_session", { id });
 export const ensureHookInstalled = () => invoke<void>("ensure_hook_installed");
 
 /** Payload re-emitted by the Rust hook bridge for each Claude Code hook fire. */
-export type HookEvent = { termId: string; event: string; notificationType: string };
+export type HookEvent = {
+  termId: string;
+  event: string;
+  notificationType: string;
+  sessionId: string;
+  transcriptPath: string;
+};

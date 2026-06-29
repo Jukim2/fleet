@@ -17,11 +17,13 @@ export function useClaudeSessions(activeProjectId: string | null, projects: Proj
   byProjectRef.current = byProject;
 
   const load = useCallback(
-    async (projectId: string, force = false) => {
+    // `silent` skips the loading-spinner toggle — used by the periodic poll so
+    // the list refreshes without flicker.
+    async (projectId: string, force = false, silent = false) => {
       const proj = projectsRef.current.find((p) => p.id === projectId);
       if (!proj) return;
       if (!force && byProjectRef.current[projectId]) return; // already cached
-      setLoading(true);
+      if (!silent) setLoading(true);
       try {
         const list = await listClaudeSessions(proj.path);
         setByProject((s) => ({ ...s, [projectId]: list }));
@@ -32,7 +34,7 @@ export function useClaudeSessions(activeProjectId: string | null, projects: Proj
         console.error("[fleet] list_claude_sessions failed:", e);
         setByProject((s) => ({ ...s, [projectId]: [] }));
       } finally {
-        setLoading(false);
+        if (!silent) setLoading(false);
       }
     },
     [],
@@ -41,6 +43,14 @@ export function useClaudeSessions(activeProjectId: string | null, projects: Proj
   useEffect(() => {
     if (activeProjectId) load(activeProjectId);
   }, [activeProjectId, projects.length, load]);
+
+  // Periodically re-scan the active project's transcripts so newly created or
+  // updated sessions show up without a manual refresh.
+  useEffect(() => {
+    if (!activeProjectId) return;
+    const id = setInterval(() => load(activeProjectId, true, true), 30_000);
+    return () => clearInterval(id);
+  }, [activeProjectId, load]);
 
   const refresh = useCallback(() => {
     if (activeProjectId) load(activeProjectId, true);
