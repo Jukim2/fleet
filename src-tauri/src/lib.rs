@@ -59,6 +59,7 @@ pub fn run() {
             config::read_plan,
             config::clear_plan,
             bridge::ensure_hook_installed,
+            bridge::prepare_claude_auto,
             bridge::web_enqueue,
             diagnostics::app_diagnostics,
             diagnostics::path_exists,
