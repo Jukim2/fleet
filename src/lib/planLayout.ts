@@ -30,13 +30,21 @@ export type GNode = {
 export type GEdge = { id: string; d: string; kind: "hier" | "dep" };
 export type PlanLayout = { nodes: GNode[]; edges: GEdge[]; width: number; height: number };
 
-const widthOf = (k: GNodeKind) => (k === "theme" ? THEME_W : k === "feature" ? FEAT_W : STEP_W);
-const heightOf = (k: GNodeKind) => (k === "step" ? STEP_H : NODE_H);
 const cx = (n: GNode) => n.x + n.w;
 const cy = (n: GNode) => n.y + n.h / 2;
 
-/** Build positioned nodes + edges. `collapsed(id)` hides a node's children. */
-export function layoutPlan(plan: Plan, collapsed: (id: string) => boolean): PlanLayout {
+/** Build positioned nodes + edges. `collapsed(id)` hides a node's children.
+ *  `scale` enlarges step cards (width + height) so users can size them up. */
+export function layoutPlan(
+  plan: Plan,
+  collapsed: (id: string) => boolean,
+  scale = 1,
+): PlanLayout {
+  const stepW = Math.round(STEP_W * scale);
+  const stepH = Math.round(STEP_H * scale);
+  const widthOf = (k: GNodeKind) => (k === "theme" ? THEME_W : k === "feature" ? FEAT_W : stepW);
+  const heightOf = (k: GNodeKind) => (k === "step" ? stepH : NODE_H);
+
   const featByTheme: Record<string, typeof plan.features> = {};
   for (const f of plan.features) (featByTheme[f.themeId] ??= []).push(f);
   const stepByFeat: Record<string, typeof plan.steps> = {};
@@ -54,7 +62,7 @@ export function layoutPlan(plan: Plan, collapsed: (id: string) => boolean): Plan
     return push({ id, kind, title, x, y: yCenter - h / 2, w: widthOf(kind), h });
   };
 
-  let cursor = STEP_H / 2; // y of the next leaf's center (steps are the tallest leaves)
+  let cursor = stepH / 2; // y of the next leaf's center (steps are the tallest leaves)
 
   for (const theme of plan.themes) {
     const tCollapsed = collapsed(theme.id);
@@ -74,7 +82,7 @@ export function layoutPlan(plan: Plan, collapsed: (id: string) => boolean): Plan
           for (const step of steps) {
             place(step.id, "step", step.title, COL_STEP, cursor);
             stepCenters.push(cursor);
-            cursor += STEP_H + ROW_GAP;
+            cursor += stepH + ROW_GAP;
           }
           const c = avg(stepCenters);
           place(feat.id, "feature", feat.title, COL_FEAT, c);
@@ -129,7 +137,7 @@ export function layoutPlan(plan: Plan, collapsed: (id: string) => boolean): Plan
 
   // dep arcs bow out to the right of the step column (up to ~94px); leave room so
   // they aren't clipped by the scroll area.
-  const width = COL_STEP + STEP_W + 130;
+  const width = COL_STEP + stepW + 130;
   const height = Math.max(NODE_H, cursor) + ROW_GAP;
   return { nodes, edges, width, height };
 }

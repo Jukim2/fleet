@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { CSSProperties, useEffect, useMemo, useState } from "react";
 import { Plan, PlanStep, Project, TaskStatus, Terminal, TermStatus } from "../../types";
 import { gitIsRepo } from "../../api/git";
 import { openPath } from "../../api/system";
@@ -47,6 +47,8 @@ export default function PlanView({
   onClearWtLastRun,
   onShowStep,
   onClearWtMsg,
+  cardScale,
+  onSetCardScale,
   onClose,
 }: {
   project: Project;
@@ -64,6 +66,8 @@ export default function PlanView({
   onClearWtLastRun: () => void;
   onShowStep: (termId: string) => void;
   onClearWtMsg: () => void;
+  cardScale: number;
+  onSetCardScale: (scale: number) => void;
   onRequestPlan: (goal: string) => void;
   onLoadPlan: () => void;
   onRunSteps: (stepIds: string[], target: RunTarget) => void;
@@ -125,12 +129,16 @@ export default function PlanView({
 
   const layout = useMemo(() => {
     if (!plan) return null;
-    return layoutPlan(plan, (id) => {
-      const ids = stepIdsUnderTheme[id] ?? stepIdsUnderFeature[id] ?? [];
-      return isCollapsed(id, ids);
-    });
+    return layoutPlan(
+      plan,
+      (id) => {
+        const ids = stepIdsUnderTheme[id] ?? stepIdsUnderFeature[id] ?? [];
+        return isCollapsed(id, ids);
+      },
+      cardScale,
+    );
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [plan, effTs, stepIdsUnderTheme, stepIdsUnderFeature]);
+  }, [plan, effTs, stepIdsUnderTheme, stepIdsUnderFeature, cardScale]);
 
   const total = plan?.steps.length ?? 0;
   const done = (plan?.steps ?? []).filter((s) => effTs[s.id] === "done").length;
@@ -195,6 +203,25 @@ export default function PlanView({
             </div>
           )}
           <div className="plan-head-actions">
+            <div className="plan-cardsize" title="카드 크기 (저장됨)">
+              <button
+                className="icon-btn"
+                onClick={() => onSetCardScale(Math.max(0.8, Math.round((cardScale - 0.1) * 10) / 10))}
+                disabled={cardScale <= 0.8}
+                title="작게"
+              >
+                －
+              </button>
+              <span className="plan-cardsize-val">{Math.round(cardScale * 100)}%</span>
+              <button
+                className="icon-btn"
+                onClick={() => onSetCardScale(Math.min(2, Math.round((cardScale + 0.1) * 10) / 10))}
+                disabled={cardScale >= 2}
+                title="크게"
+              >
+                ＋
+              </button>
+            </div>
             <button className="btn" onClick={onAddTheme} title="테마를 직접 추가">
               ＋ 테마
             </button>
@@ -268,7 +295,12 @@ export default function PlanView({
               이어지는 요청도 같은 그래프에 붙어요. 직접 만들려면 <b>＋ 테마</b>로 시작하세요.
             </div>
           ) : (
-            <div className="plan-graph" style={{ width: layout.width, height: layout.height }}>
+            <div
+              className="plan-graph"
+              style={
+                { width: layout.width, height: layout.height, "--pcs": cardScale } as CSSProperties
+              }
+            >
               <svg className="plan-edges" width={layout.width} height={layout.height}>
                 <defs>
                   <marker

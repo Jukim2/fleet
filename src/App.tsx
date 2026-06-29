@@ -213,6 +213,8 @@ export default function App() {
           wtMsg={f.wtMsg[activeProject.id]}
           wtFix={f.wtFix[activeProject.id]}
           onResolveFinalize={() => f.resolveFinalize(activeProject.id)}
+          cardScale={f.config.planCardScale ?? 1}
+          onSetCardScale={f.setPlanCardScale}
           onStopWtRun={() => f.stopWtRun(activeProject.id)}
           onClearWtLastRun={() => f.clearWtLastRun(activeProject.id)}
           onShowStep={(termId) => f.showWtStep(activeProject.id, termId)}

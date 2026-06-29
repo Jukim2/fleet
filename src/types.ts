@@ -126,6 +126,8 @@ export type FleetConfig = {
   webTabs: WebTab[];
   /** projectId -> auto-generated plan */
   plans: Record<string, Plan>;
+  /** plan-graph step card size multiplier (1 = default); persisted */
+  planCardScale?: number;
 };
 
 /** Live, non-persisted status of a terminal.
@@ -149,4 +151,5 @@ export const emptyConfig: FleetConfig = {
   boards: {},
   webTabs: [],
   plans: {},
+  planCardScale: 1,
 };

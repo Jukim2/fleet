@@ -1015,6 +1015,10 @@ export function useFleet() {
   };
   const clearWtMsg = (projectId: string) => setWtMsg((m) => ({ ...m, [projectId]: "" }));
 
+  /** Plan-graph card size (persisted in config, applies to all plans). */
+  const setPlanCardScale = (scale: number) =>
+    setConfig((c) => ({ ...c, planCardScale: Math.max(0.8, Math.min(2, scale)) }));
+
   /** The fix request handed to Claude, tailored to how the final merge got stuck. */
   const finalizeFixPrompt = (fix: WtFix): string => {
     const b = fix.branch;
@@ -1549,6 +1553,7 @@ export function useFleet() {
     wtMsg,
     wtFix,
     resolveFinalize,
+    setPlanCardScale,
     stopWtRun,
     clearWtMsg,
     showWtStep,

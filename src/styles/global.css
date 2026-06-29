@@ -30,14 +30,12 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
-/* Themed scrollbars everywhere. Defining ::-webkit-scrollbar opts every
-   scrollable element out of macOS's thin auto-hiding overlay bar and into our
-   own always-styled one, so it looks the same on macOS (WKWebView) and Windows
-   (WebView2) instead of falling back to each OS's default. */
-* {
-  scrollbar-width: thin;
-  scrollbar-color: var(--border) transparent;
-}
+/* Themed scrollbars everywhere. We deliberately do NOT set the standard
+   `scrollbar-width`/`scrollbar-color`: on modern WebKit (macOS WKWebView) those
+   switch the engine to its native thin bar and make it IGNORE ::-webkit-scrollbar
+   entirely (that's why the OS light overlay bar kept showing). Relying purely on
+   the ::-webkit-scrollbar pseudo-elements gives us a fully themed bar on both
+   WKWebView and WebView2. */
 ::-webkit-scrollbar {
   width: 11px;
   height: 11px;

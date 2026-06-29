@@ -440,6 +440,12 @@
   color: var(--muted);
   opacity: 0.55;
 }
+.plan-node-prompt::-webkit-scrollbar {
+  width: 7px;
+}
+.plan-node-prompt::-webkit-scrollbar-thumb {
+  border-width: 2px;
+}
 .plan-node-prompt:hover {
   border-color: var(--border);
 }
@@ -448,6 +454,32 @@
   color: var(--text);
   background: var(--bg);
   border-color: var(--accent);
+}
+/* step card text scales with the user's card-size setting (--pcs on .plan-graph) */
+.plan-node.step .plan-node-title {
+  font-size: calc(12px * var(--pcs, 1));
+}
+.plan-node.step .plan-node-state {
+  font-size: calc(10px * var(--pcs, 1));
+}
+.plan-node-body,
+.plan-node-prompt {
+  font-size: calc(11px * var(--pcs, 1));
+}
+
+/* card-size stepper in the header */
+.plan-cardsize {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin-right: 4px;
+}
+.plan-cardsize-val {
+  min-width: 38px;
+  text-align: center;
+  font-size: 11px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
 }
 .plan-node.step.done {
   border-left-color: var(--green);
