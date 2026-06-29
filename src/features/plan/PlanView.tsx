@@ -190,12 +190,14 @@ export default function PlanView({
               </span>
             </div>
           )}
-          <button className="btn" onClick={onAddTheme} title="테마를 직접 추가">
-            ＋ 테마
-          </button>
-          <button className="icon-btn" onClick={onClose} title="닫기">
-            ✕
-          </button>
+          <div className="plan-head-actions">
+            <button className="btn" onClick={onAddTheme} title="테마를 직접 추가">
+              ＋ 테마
+            </button>
+            <button className="icon-btn" onClick={onClose} title="닫기">
+              ✕
+            </button>
+          </div>
         </header>
 
         {/* Goal input — generate (merges into the graph) or load a plan */}
@@ -302,12 +304,16 @@ export default function PlanView({
                       key={n.id}
                       className={`plan-node step ${cls} ${on ? "sel" : ""}`}
                       style={{ left: n.x, top: n.y, width: n.w, height: NODE_H }}
-                      title={tip}
                       onClick={() => toggleStep(n.id)}
                       onDoubleClick={() => setStepEdit(s)}
                     >
                       <span className="plan-node-title">{n.title}</span>
                       <span className={`plan-node-state ${cls}`}>{label}</span>
+                      {/* hover preview of the instruction (지시문) — visible without clicking */}
+                      <div className="plan-node-tip" role="tooltip">
+                        <div className="plan-node-tip-head">지시문</div>
+                        <div className="plan-node-tip-body">{tip}</div>
+                      </div>
                       <span className="plan-node-actions">
                         {liveTerm && (
                           <button
@@ -369,14 +375,17 @@ export default function PlanView({
                     ) : (
                       <span
                         className="plan-node-title"
-                        onClick={() => toggleGroup(ids)}
-                        onDoubleClick={() => setEditingId(n.id)}
-                        title={`${n.title} — 클릭: 단계 전체 선택 · 더블클릭: 이름 변경`}
+                        onClick={() => setEditingId(n.id)}
+                        title={`${n.title} — 클릭: 이름 변경`}
                       >
                         {n.title}
                       </span>
                     )}
-                    <span className="plan-node-count">
+                    <span
+                      className="plan-node-count clickable"
+                      onClick={() => toggleGroup(ids)}
+                      title="클릭: 하위 단계 전체 선택/해제"
+                    >
                       {allDone ? "✓ " : ""}
                       {d}/{ids.length}
                     </span>
