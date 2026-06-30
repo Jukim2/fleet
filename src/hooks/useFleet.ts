@@ -14,9 +14,12 @@ import {
   writePty,
 } from "../api/pty";
 import { loadConfig, saveConfig } from "../api/config";
+import { runCommand } from "../api/exec";
 import { closeWebTab, openWebTab, webEval } from "../api/web";
 import { cdpEval, cdpOpen, cdpTargets } from "../api/cdp";
 import { clearPlan, plannerPrompt, readPlan } from "../api/planner";
+import { clearPreset, presetGenPrompt, readPreset, GeneratedPreset } from "../api/presetgen";
+import { resolvePreset } from "../lib/presets";
 import {
   gitIsRepo,
   wtAdd,
@@ -53,7 +56,6 @@ import {
   splitLeafWithSide,
 } from "../lib/layout";
 import {
-  Block,
   ClaudeSession,
   FleetConfig,
   LayoutNode,
@@ -61,8 +63,14 @@ import {
   Lane,
   LaneTarget,
   Plan,
+  PlanDir,
+  PlanSort,
+  PlanViewport,
+  Preset,
+  PresetOverride,
   QueueBoard,
   QueueTask,
+  Toast,
   TaskStatus,
   Terminal,
   TermStatus,
@@ -141,6 +149,56 @@ function migrateBoards(c: FleetConfig): Record<string, QueueBoard> {
   return boards;
 }
 
+/**
+ * Presets as persisted, upgrading the pre-global shape: `presets` used to be a
+ * `Record<projectId, Preset[]>`. We flatten it into one global list (deduped by
+ * kind+name; the first project's body becomes the default) and turn any project
+ * whose body differs into a per-project override. Also strips the old `icon`.
+ */
+function migratePresets(c: FleetConfig): {
+  presets: Preset[];
+  presetOverrides: Record<string, Record<string, PresetOverride>>;
+} {
+  // Already migrated: global array + (maybe) overrides.
+  if (Array.isArray(c.presets))
+    return {
+      presets: c.presets.map((p) => ({
+        id: p.id,
+        name: p.name,
+        kind: p.kind,
+        command: p.command,
+        prompt: p.prompt,
+        desc: p.desc,
+      })),
+      presetOverrides: c.presetOverrides ?? {},
+    };
+
+  const legacy = c.presets as unknown as Record<string, Preset[]> | undefined;
+  const presets: Preset[] = [];
+  const presetOverrides: Record<string, Record<string, PresetOverride>> = {};
+  if (!legacy) return { presets, presetOverrides };
+
+  const byKey = new Map<string, Preset>();
+  const bodyOf = (p: Preset) => (p.kind === "code" ? p.command : p.prompt) ?? "";
+  for (const [projectId, list] of Object.entries(legacy)) {
+    for (const p of list ?? []) {
+      const key = `${p.kind}\n${p.name.trim().toLowerCase()}`;
+      let global = byKey.get(key);
+      if (!global) {
+        global = { id: uid(), name: p.name, kind: p.kind, command: p.command, prompt: p.prompt };
+        byKey.set(key, global);
+        presets.push(global);
+        continue; // first occurrence defines the default — no override needed
+      }
+      if (bodyOf(p) && bodyOf(p) !== bodyOf(global)) {
+        const ov: PresetOverride = p.kind === "code" ? { command: p.command } : { prompt: p.prompt };
+        (presetOverrides[projectId] ??= {})[global.id] = ov;
+      }
+    }
+  }
+  return { presets, presetOverrides };
+}
+
 /** Central store: owns config + per-session UI state and every mutation. */
 export function useFleet() {
   const [config, setConfig] = useState<FleetConfig>(emptyConfig);
@@ -152,6 +210,10 @@ export function useFleet() {
   const [taskStatus, setTaskStatus] = useState<Record<string, TaskStatus>>({});
   /** projectId currently having its plan generated (for a spinner), else null */
   const [planning, setPlanning] = useState<string | null>(null);
+  /** presetIds whose body is being AI-generated for the active project (spinner) */
+  const [presetGen, setPresetGen] = useState<Record<string, boolean>>({});
+  /** transient corner toasts (e.g. preset run results), auto-dismissed */
+  const [toasts, setToasts] = useState<Toast[]>([]);
   const genTimer = useRef<number | null>(null);
   const loaded = useRef(false);
 
@@ -267,9 +329,10 @@ export function useFleet() {
         if (lay) focus[p.id] = firstLeaf(lay).id;
       }
       const boards = migrateBoards(c);
+      const { presets, presetOverrides } = migratePresets(c);
       const plans: Record<string, Plan> = {};
       for (const [pid, p] of Object.entries(c.plans ?? {})) plans[pid] = normalizePlan(p);
-      setConfig({ ...c, layouts, boards, plans });
+      setConfig({ ...c, layouts, boards, presets, presetOverrides, plans });
       setFocusedPane(focus);
       const first = c.projects[0]?.id ?? null;
       setActiveProjectId(first);
@@ -562,17 +625,180 @@ export function useFleet() {
     setFocusedPane((fp) => ({ ...fp, [projectId]: targetPaneId }));
   };
 
-  // --- blocks ---
-  const setBlocks = (blocks: Block[]) => setConfig((c) => ({ ...c, blocks }));
-  const sendBlock = (b: Block) => {
-    if (focusedTermId) sendPrompt(focusedTermId, b.text);
+  // --- toasts (transient corner notifications) ---
+  const pushToast = (kind: Toast["kind"], text: string) => {
+    const id = uid();
+    setToasts((ts) => [...ts, { id, kind, text }]);
+    window.setTimeout(
+      () => setToasts((ts) => ts.filter((t) => t.id !== id)),
+      kind === "err" ? 6000 : 3200,
+    );
   };
-  const broadcastBlock = (b: Block) => {
-    for (const t of config.terminals) {
-      if (statuses[t.id] && statuses[t.id] !== "stopped") sendPrompt(t.id, b.text);
+  const dismissToast = (id: string) => setToasts((ts) => ts.filter((t) => t.id !== id));
+
+  // --- presets (global one-click actions + per-project behavior overrides) ---
+
+  /** Replace the global preset list. */
+  const setGlobalPresets = (presets: Preset[]) => setConfig((c) => ({ ...c, presets }));
+
+  /** Set (or clear, when the body is empty) a project's override of a preset's
+   *  behavior. */
+  const setPresetOverride = (projectId: string, presetId: string, ov: PresetOverride | null) =>
+    setConfig((c) => {
+      const forProject = { ...(c.presetOverrides[projectId] ?? {}) };
+      const body = ov?.command ?? ov?.prompt;
+      if (!ov || !body?.trim()) delete forProject[presetId];
+      else forProject[presetId] = ov;
+      return { ...c, presetOverrides: { ...c.presetOverrides, [projectId]: forProject } };
+    });
+
+  /** Resolve a global preset to its effective form for a project, then run it. */
+  const runPreset = (projectId: string, presetId: string) => {
+    const c = configRef.current;
+    const global = c.presets.find((x) => x.id === presetId);
+    if (!global) return;
+    const p = resolvePreset(global, c.presetOverrides[projectId]?.[presetId]);
+    if (p.kind === "ai") {
+      if (!p.prompt?.trim()) {
+        pushToast("err", `${p.name}: 프롬프트가 비어 있어요`);
+        return;
+      }
+      if (focusedTermId) {
+        sendPrompt(focusedTermId, p.prompt);
+        pushToast("ok", `${p.name} → 현재 터미널`);
+      } else {
+        pushToast("err", "전송할 터미널이 없어요");
+      }
+      return;
     }
-    // Also fan the prompt out to every open web AI tab.
-    broadcastToWebTabs(b.text);
+    // code preset: run the shell command once in the project cwd.
+    const project = c.projects.find((pr) => pr.id === projectId);
+    if (!project) return;
+    if (!p.command?.trim()) {
+      pushToast("err", `${p.name}: 명령이 비어 있어요`);
+      return;
+    }
+    // A pending toast (no auto-dismiss) we replace with the result.
+    const pending = uid();
+    setToasts((ts) => [...ts, { id: pending, kind: "info", text: `${p.name} 실행 중…` }]);
+    runCommand(project.path, p.command)
+      .then(() => {
+        dismissToast(pending);
+        pushToast("ok", `${p.name} 완료`);
+      })
+      .catch((e) => {
+        dismissToast(pending);
+        pushToast("err", `${p.name} 실패 — ${String(e).slice(0, 200)}`);
+      });
+  };
+
+  /** Spawn a generator Claude in the project, have it inspect the repo and write
+   *  `.fleet/preset.json`, then apply the body it produced — to the preset's
+   *  global default (`scope="default"`) or this project's override
+   *  (`scope="override"`). Mirrors the planner flow. */
+  const generatePresetBody = (
+    projectId: string,
+    preset: Preset,
+    description: string,
+    scope: "default" | "override",
+  ) => {
+    const project = configRef.current.projects.find((p) => p.id === projectId);
+    if (!project) return;
+    const cwd = project.path;
+    setPresetGen((g) => ({ ...g, [preset.id]: true }));
+    clearPreset(cwd).catch(() => {});
+    const termId = spawnVisibleTerminal(
+      projectId,
+      "claude --permission-mode acceptEdits",
+      `프리셋: ${preset.name}`,
+    );
+    let sent = false;
+    let tries = 0;
+    let timer = 0;
+    const stop = () => {
+      if (timer) window.clearInterval(timer);
+      setPresetGen((g) => {
+        const n = { ...g };
+        delete n[preset.id];
+        return n;
+      });
+    };
+    timer = window.setInterval(async () => {
+      tries++;
+      if (!sent) {
+        if (statusesRef.current[termId] === "idle") {
+          sendPrompt(termId, presetGenPrompt(preset.kind, preset.name, description));
+          sent = true;
+          tries = 0;
+        } else if (tries > 45) {
+          stop();
+          pushToast("err", `${preset.name}: 세션 준비 실패`);
+        }
+        return;
+      }
+      const raw = await readPreset(cwd).catch(() => null);
+      if (raw) {
+        let gen: GeneratedPreset | null = null;
+        try {
+          gen = JSON.parse(raw);
+        } catch {
+          gen = null;
+        }
+        const body = (preset.kind === "code" ? gen?.command : gen?.prompt)?.trim();
+        if (body) {
+          if (scope === "default") {
+            setConfig((c) => ({
+              ...c,
+              presets: c.presets.map((p) =>
+                p.id === preset.id
+                  ? preset.kind === "code"
+                    ? { ...p, command: body }
+                    : { ...p, prompt: body }
+                  : p,
+              ),
+            }));
+          } else {
+            setPresetOverride(
+              projectId,
+              preset.id,
+              preset.kind === "code" ? { command: body } : { prompt: body },
+            );
+          }
+          clearPreset(cwd).catch(() => {});
+          stop();
+          pushToast("ok", `${preset.name} 채우기 완료`);
+          return;
+        }
+      }
+      if (tries > 150) {
+        stop();
+        pushToast("err", `${preset.name}: 생성 시간 초과`);
+      }
+    }, 2000);
+  };
+
+  /** Create a global preset from a natural-language description, then have AI fill
+   *  its default body by inspecting the current project. */
+  const requestAiPreset = (
+    projectId: string,
+    name: string,
+    kind: Preset["kind"],
+    description: string,
+  ) => {
+    const desc = description.trim();
+    const nm = name.trim() || desc.slice(0, 24);
+    if (!nm || !desc) return;
+    const preset: Preset = { id: uid(), name: nm, kind, desc };
+    setGlobalPresets([...configRef.current.presets, preset]);
+    generatePresetBody(projectId, preset, desc, "default");
+  };
+
+  /** Re-generate a preset's body for THIS project (stored as an override), reusing
+   *  its original AI description (falling back to its name). */
+  const refillPreset = (projectId: string, presetId: string) => {
+    const preset = configRef.current.presets.find((p) => p.id === presetId);
+    if (!preset) return;
+    generatePresetBody(projectId, preset, preset.desc?.trim() || preset.name, "override");
   };
 
   // --- web tabs (logged-in AI sites) ---
@@ -624,47 +850,12 @@ export function useFleet() {
       boards: { ...c.boards, [projectId]: fn(c.boards[projectId] ?? emptyBoard()) },
     }));
 
-  /** Add a lane (track): either bound to an existing terminal, or a spawn track
-   *  that creates its own session when first run. */
-  const addLane = (projectId: string, target: LaneTarget, title: string) =>
-    patchBoard(projectId, (b) => {
-      if (
-        target.kind === "session" &&
-        b.lanes.some((l) => l.target.kind === "session" && l.target.termId === target.termId)
-      )
-        return b; // that terminal is already a lane
-      return { ...b, lanes: [...b.lanes, { id: uid(), title, target }] };
-    });
-  const removeLane = (projectId: string, laneId: string) => {
-    delete activeTask.current[laneId];
-    const board = configRef.current.boards[projectId];
-    if (board) for (const t of board.tasks) if (t.laneId === laneId) setTaskStat(t.id, null);
-    patchBoard(projectId, (b) => dropLane(b, laneId));
-  };
-  const addTask = (projectId: string, laneId: string, text: string) =>
-    patchBoard(projectId, (b) => ({
-      ...b,
-      tasks: [...b.tasks, { id: uid(), laneId, text, deps: [] } as QueueTask],
-    }));
-  const removeTask = (projectId: string, taskId: string) => {
-    setTaskStat(taskId, null);
-    patchBoard(projectId, (b) => ({
-      ...b,
-      tasks: b.tasks
-        .filter((t) => t.id !== taskId)
-        .map((t) => ({ ...t, deps: t.deps.filter((d) => d !== taskId) })),
-    }));
-  };
-  const setTaskDeps = (projectId: string, taskId: string, deps: string[]) =>
-    patchBoard(projectId, (b) => ({
-      ...b,
-      tasks: b.tasks.map((t) => (t.id === taskId ? { ...t, deps } : t)),
-    }));
   const setBoardRunning = (projectId: string, running: boolean) =>
     patchBoard(projectId, (b) => (b.running === running ? b : { ...b, running }));
-  const toggleBoardRunning = (projectId: string) =>
-    patchBoard(projectId, (b) => ({ ...b, running: !b.running }));
-  const resetBoard = (projectId: string) => {
+
+  /** Abort a non-worktree plan run: stop dispatching, clear live task state.
+   *  (Worktree runs have their own stop via the wt pipeline.) */
+  const stopBoardRun = (projectId: string) => {
     const b = configRef.current.boards[projectId];
     if (b) {
       const next = { ...taskStatusRef.current };
@@ -739,17 +930,17 @@ export function useFleet() {
       const cur = c.plans[projectId] ?? { themes: [], features: [], steps: [] };
       return { ...c, plans: { ...c.plans, [projectId]: fn(cur) } };
     });
-  const addTheme = (projectId: string, title = "새 테마") =>
+  const addTheme = (projectId: string, title = "새 대블럭") =>
     editPlan(projectId, (p) => ({ ...p, themes: [...p.themes, { id: uid(), title }] }));
   // Adding under a done node: that node auto-collapses (done), so a freshly added
   // child would be hidden. Force the parent(s) open so the addition is visible.
-  const addFeature = (projectId: string, themeId: string, title = "새 기능") =>
+  const addFeature = (projectId: string, themeId: string, title = "새 중블럭") =>
     editPlan(projectId, (p) => ({
       ...p,
       features: [...p.features, { id: uid(), themeId, title }],
       collapsed: { ...(p.collapsed ?? {}), [themeId]: false },
     }));
-  const addStep = (projectId: string, featureId: string, title = "새 단계") =>
+  const addStep = (projectId: string, featureId: string, title = "새 소블럭") =>
     editPlan(projectId, (p) => {
       const themeId = p.features.find((f) => f.id === featureId)?.themeId;
       return {
@@ -776,6 +967,41 @@ export function useFleet() {
     }));
   const removePlanNode = (projectId: string, id: string) =>
     editPlan(projectId, (p) => removeNode(p, id));
+  /** Move a step under a different feature (drag-to-reparent in the plan graph).
+   *  Deps are unaffected (they're cross-feature already). Target feature is
+   *  force-expanded so the moved step stays visible. */
+  const setStepFeature = (projectId: string, stepId: string, featureId: string) =>
+    editPlan(projectId, (p) => {
+      if (!p.features.some((f) => f.id === featureId)) return p;
+      return {
+        ...p,
+        steps: p.steps.map((s) => (s.id === stepId ? { ...s, featureId } : s)),
+        collapsed: { ...(p.collapsed ?? {}), [featureId]: false },
+      };
+    });
+  /** Replace a step's prerequisite list (manual edge editing in the plan graph).
+   *  Drops self-refs, unknown ids, and any edge that would introduce a cycle —
+   *  the worktree/board runner relies on deps forming a DAG. */
+  const setStepDeps = (projectId: string, stepId: string, deps: string[]) =>
+    editPlan(projectId, (p) => {
+      const byId = new Map(p.steps.map((s) => [s.id, s]));
+      if (!byId.has(stepId)) return p;
+      const accepted: string[] = [];
+      // does `from` (transitively) reach `target`, given stepId's deps = accepted-so-far?
+      const reaches = (from: string, target: string, seen = new Set<string>()): boolean => {
+        if (from === target) return true;
+        if (seen.has(from)) return false;
+        seen.add(from);
+        const ds = from === stepId ? accepted : byId.get(from)?.deps ?? [];
+        return ds.some((d) => reaches(d, target, seen));
+      };
+      for (const d of new Set(deps)) {
+        if (d === stepId || !byId.has(d)) continue;
+        if (reaches(d, stepId)) continue; // adding d would close a cycle through stepId
+        accepted.push(d);
+      }
+      return { ...p, steps: p.steps.map((s) => (s.id === stepId ? { ...s, deps: accepted } : s)) };
+    });
 
   /** Merge a freshly-read .fleet/plan.json into the project's persistent graph. */
   const mergeRawPlan = (projectId: string, raw: string | null): boolean => {
@@ -974,7 +1200,7 @@ export function useFleet() {
     const run = { ...buildWtRun(projectId, project.path, plan, stepIds, auto, slug, effort), startedAt: Date.now() };
     clearWtLastRun(projectId); // a new run supersedes the archived one
     clearWtFix(projectId); // and clears any stuck-merge banner from before
-    setWtMsg((m) => ({ ...m, [projectId]: `worktree 파이프라인 시작… (${run.steps.length}단계, ${run.branch})` }));
+    setWtMsg((m) => ({ ...m, [projectId]: `worktree 파이프라인 시작… (${run.steps.length}개 소블럭, ${run.branch})` }));
     // Pre-clear Claude Code's first-run gates (folder-trust per worktree dir,
     // plus the --dangerously-skip-permissions warning in auto mode) so the
     // sessions don't hang on a startup dialog the runner can't get past.
@@ -1018,6 +1244,20 @@ export function useFleet() {
   /** Plan-graph card size (persisted in config, applies to all plans). */
   const setPlanCardScale = (scale: number) =>
     setConfig((c) => ({ ...c, planCardScale: Math.max(0.8, Math.min(2, scale)) }));
+
+  /** Persist a project's plan-graph viewport (pan + zoom) so it survives reopen.
+   *  Debounced by the caller — the graph writes this on pan/zoom settle, not per frame. */
+  const setPlanView = (projectId: string, v: PlanViewport) =>
+    setConfig((c) => ({ ...c, planViews: { ...(c.planViews ?? {}), [projectId]: v } }));
+
+  /** Focus the plan graph on a set of 대블럭/중블럭 subtrees (empty = 전체 보기).
+   *  Persisted per project so reopening the plan returns to the same blocks. */
+  const setPlanFocus = (projectId: string, ids: string[]) =>
+    setConfig((c) => ({ ...c, planFocus: { ...(c.planFocus ?? {}), [projectId]: ids } }));
+
+  /** Plan-graph flow direction + sibling order (persisted, applies to all plans). */
+  const setPlanDir = (dir: PlanDir) => setConfig((c) => ({ ...c, planDir: dir }));
+  const setPlanSort = (sort: PlanSort) => setConfig((c) => ({ ...c, planSort: sort }));
 
   /** The fix request handed to Claude, tailored to how the final merge got stuck. */
   const finalizeFixPrompt = (fix: WtFix): string => {
@@ -1519,9 +1759,14 @@ export function useFleet() {
     closePane,
     splitWithTerm,
     movePane,
-    setBlocks,
-    sendBlock,
-    broadcastBlock,
+    setGlobalPresets,
+    setPresetOverride,
+    runPreset,
+    requestAiPreset,
+    refillPreset,
+    presetGen,
+    toasts,
+    dismissToast,
     addWebTab,
     removeWebTab,
     renameWebTab,
@@ -1529,17 +1774,11 @@ export function useFleet() {
     openAllWebTabs,
     sendToWebTab,
     broadcastToWebTabs,
-    addLane,
-    removeLane,
-    addTask,
-    removeTask,
-    setTaskDeps,
-    toggleBoardRunning,
-    resetBoard,
     planning,
     requestPlan,
     loadPlan,
     runSteps,
+    stopBoardRun,
     toggleCollapsed,
     addTheme,
     addFeature,
@@ -1547,6 +1786,8 @@ export function useFleet() {
     renameNode,
     editStep,
     removePlanNode,
+    setStepDeps,
+    setStepFeature,
     wtRuns,
     wtLastRun,
     clearWtLastRun,
@@ -1554,6 +1795,10 @@ export function useFleet() {
     wtFix,
     resolveFinalize,
     setPlanCardScale,
+    setPlanView,
+    setPlanFocus,
+    setPlanDir,
+    setPlanSort,
     stopWtRun,
     clearWtMsg,
     showWtStep,

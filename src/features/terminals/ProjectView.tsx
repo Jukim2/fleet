@@ -5,7 +5,6 @@ import SplitLayout, { SplitCtx } from "./SplitLayout";
 import { LayoutNode, Project, Terminal as Term, TermStatus } from "../../types";
 import { leaves } from "../../lib/layout";
 import { openPath } from "../../api/system";
-import { mod } from "../../lib/platform";
 import "./terminals.css";
 
 type Rect = { left: number; top: number; width: number; height: number };
@@ -56,10 +55,10 @@ export default function ProjectView({
   onSplitWithTerm,
   onMovePane,
   onStatus,
-  onOpenPalette,
-  onOpenDrawer,
   onOpenWeb,
   onOpenPlan,
+  presetsOpen,
+  onTogglePresets,
   wtActive,
 }: {
   project: Project;
@@ -81,10 +80,10 @@ export default function ProjectView({
   onSplitWithTerm: (paneId: string, dir: "row" | "col", before: boolean, termId: string) => void;
   onMovePane: (sourcePaneId: string, targetPaneId: string, zone: Zone) => void;
   onStatus: (id: string, status: TermStatus) => void;
-  onOpenPalette: () => void;
-  onOpenDrawer: (section: "blocks" | "queue") => void;
   onOpenWeb: () => void;
   onOpenPlan: () => void;
+  presetsOpen: boolean;
+  onTogglePresets: () => void;
   wtActive?: { done: number; total: number; active: number; error: number };
 }) {
   const stageRef = useRef<HTMLDivElement>(null);
@@ -236,14 +235,12 @@ export default function ProjectView({
           </button>
         </div>
         <div className="pv-tools">
-          <button className="tool" onClick={onOpenPalette} title={`블럭 빠른 전송 (${mod("K")})`}>
-            {mod("K")}
-          </button>
-          <button className="tool" onClick={() => onOpenDrawer("blocks")} title="블럭">
-            블럭
-          </button>
-          <button className="tool" onClick={() => onOpenDrawer("queue")} title="큐">
-            큐
+          <button
+            className={`tool ${presetsOpen ? "tool-live" : ""}`}
+            onClick={onTogglePresets}
+            title="프리셋 패널 열기/닫기"
+          >
+            프리셋
           </button>
           <button
             className={`tool ${wtActive ? "tool-live" : ""}`}

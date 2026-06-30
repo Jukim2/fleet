@@ -22,6 +22,31 @@ export type Terminal = {
 /** A reusable prompt block. */
 export type Block = { id: string; name: string; text: string };
 
+/** A one-click action. Presets are **global** — every project sees them — but
+ *  each project may override the behavior (command/prompt) via `PresetOverride`.
+ *  - "code": runs `command` once in the project cwd (fire-and-forget launcher),
+ *    reporting only success/failure — never touches the claude session.
+ *  - "ai":   sends `prompt` to the focused terminal's claude session.
+ *  The `command`/`prompt` here are the **default** behavior used when a project
+ *  has no override. */
+export type Preset = {
+  id: string;
+  name: string;
+  kind: "code" | "ai";
+  /** code presets: default shell command run in the project cwd */
+  command?: string;
+  /** ai presets: default prompt sent to the focused terminal */
+  prompt?: string;
+  /** original natural-language description, if AI-generated — lets us re-fill
+   *  the body per-project on demand. Not shown in the name/command UI. */
+  desc?: string;
+};
+
+/** A project's override of a global preset's behavior. Empty fields fall back to
+ *  the preset's default. Only the body (command/prompt) is overridable — name and
+ *  kind stay global. */
+export type PresetOverride = { command?: string; prompt?: string };
+
 /** A logged-in web AI site (ChatGPT / Claude.ai / Gemini / ...) opened as its
  *  own native webview window and driven via JS injection. */
 export type WebTab = { id: string; name: string; url: string };
@@ -120,6 +145,11 @@ export type FleetConfig = {
   /** projectId -> split layout root (null = no panes shown) */
   layouts: Record<string, LayoutNode | null>;
   blocks: Block[];
+  /** global one-click action presets (code launchers + ai prompts), shown in
+   *  every project */
+  presets: Preset[];
+  /** projectId -> (presetId -> per-project behavior override) */
+  presetOverrides: Record<string, Record<string, PresetOverride>>;
   /** projectId -> queue board */
   boards: Record<string, QueueBoard>;
   /** logged-in web AI sites you can broadcast prompts to */
@@ -128,7 +158,30 @@ export type FleetConfig = {
   plans: Record<string, Plan>;
   /** plan-graph step card size multiplier (1 = default); persisted */
   planCardScale?: number;
+  /** per-project plan-graph viewport (pan + zoom), so it survives reopen */
+  planViews?: Record<string, PlanViewport>;
+  /** per-project focused blocks: 대블럭/중블럭 ids whose subtrees are shown
+   *  together (absent or empty = 전체 보기, the whole graph) */
+  planFocus?: Record<string, string[]>;
+  /** plan-graph flow direction: "LR" | "RL" | "TB" | "BT" (default LR) */
+  planDir?: PlanDir;
+  /** plan-graph sibling ordering: "added" | "title" (default added) */
+  planSort?: PlanSort;
 };
+
+/** Saved plan-graph viewport: translate (x,y) + zoom (k). */
+export type PlanViewport = { x: number; y: number; k: number };
+
+/**
+ * Plan-graph layout mode. Single-direction flows: LR/RL/TB/BT. Two-sided +
+ * radial spreads: H2 (좌우 양쪽), V2 (상하 양쪽), RAD (사방), GRID (대블럭 격자).
+ */
+export type PlanDir = "LR" | "RL" | "TB" | "BT" | "H2" | "V2" | "RAD" | "GRID";
+/** Sibling ordering within a parent block. */
+export type PlanSort = "added" | "title";
+
+/** A transient corner notification (preset run result, etc.). */
+export type Toast = { id: string; kind: "ok" | "err" | "info"; text: string };
 
 /** Live, non-persisted status of a terminal.
  *  "waiting" = Claude is blocked on a permission/input prompt (needs you). */
@@ -148,6 +201,8 @@ export const emptyConfig: FleetConfig = {
   terminals: [],
   layouts: {},
   blocks: [],
+  presets: [],
+  presetOverrides: {},
   boards: {},
   webTabs: [],
   plans: {},

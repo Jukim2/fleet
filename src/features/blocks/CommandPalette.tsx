@@ -1,21 +1,21 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Block } from "../../types";
+import { Preset, PresetOverride } from "../../types";
+import { effectiveBody } from "../../lib/presets";
 import "./blocks.css";
+import "../presets/presets.css";
 
 export default function CommandPalette({
   open,
-  blocks,
-  hasTarget,
+  presets,
+  overrides,
   onClose,
-  onSend,
-  onBroadcast,
+  onRun,
 }: {
   open: boolean;
-  blocks: Block[];
-  hasTarget: boolean;
+  presets: Preset[];
+  overrides: Record<string, PresetOverride>;
   onClose: () => void;
-  onSend: (b: Block) => void;
-  onBroadcast: (b: Block) => void;
+  onRun: (presetId: string) => void;
 }) {
   const [q, setQ] = useState("");
   const [sel, setSel] = useState(0);
@@ -31,20 +31,19 @@ export default function CommandPalette({
 
   const filtered = useMemo(
     () =>
-      blocks.filter(
-        (b) =>
-          b.name.toLowerCase().includes(q.toLowerCase()) ||
-          b.text.toLowerCase().includes(q.toLowerCase()),
+      presets.filter(
+        (p) =>
+          p.name.toLowerCase().includes(q.toLowerCase()) ||
+          effectiveBody(p, overrides[p.id]).toLowerCase().includes(q.toLowerCase()),
       ),
-    [blocks, q],
+    [presets, overrides, q],
   );
 
   if (!open) return null;
 
-  const run = (b: Block | undefined, broadcast: boolean) => {
-    if (!b) return;
-    if (broadcast) onBroadcast(b);
-    else onSend(b);
+  const run = (p: Preset | undefined) => {
+    if (!p) return;
+    onRun(p.id);
     onClose();
   };
 
@@ -58,7 +57,7 @@ export default function CommandPalette({
       setSel((s) => Math.max(s - 1, 0));
     } else if (e.key === "Enter") {
       e.preventDefault();
-      run(filtered[sel], e.shiftKey);
+      run(filtered[sel]);
     }
   };
 
@@ -68,7 +67,7 @@ export default function CommandPalette({
         <input
           ref={inputRef}
           className="palette-input"
-          placeholder="블럭 검색…  (Enter: 현재 터미널, Shift+Enter: 전체 전송)"
+          placeholder="프리셋 검색…  (Enter: 실행)"
           value={q}
           onChange={(e) => {
             setQ(e.target.value);
@@ -77,25 +76,27 @@ export default function CommandPalette({
           onKeyDown={onKey}
         />
         <div className="palette-list">
-          {blocks.length === 0 && (
-            <div className="palette-empty">저장된 블럭이 없어요. 우측 드로어에서 추가하세요.</div>
+          {presets.length === 0 && (
+            <div className="palette-empty">아직 프리셋이 없어요. 프리셋 패널에서 추가하세요.</div>
           )}
-          {blocks.length > 0 && filtered.length === 0 && (
-            <div className="palette-empty">일치하는 블럭이 없어요.</div>
+          {presets.length > 0 && filtered.length === 0 && (
+            <div className="palette-empty">일치하는 프리셋이 없어요.</div>
           )}
-          {filtered.map((b, i) => (
+          {filtered.map((p, i) => (
             <div
-              key={b.id}
+              key={p.id}
               className={`palette-item ${i === sel ? "sel" : ""}`}
               onMouseEnter={() => setSel(i)}
-              onClick={(e) => run(b, e.shiftKey)}
+              onClick={() => run(p)}
             >
-              <span className="palette-name">{b.name}</span>
-              <span className="palette-text">{b.text}</span>
+              <span className="palette-name">
+                <span className={`preset-tag ${p.kind}`}>{p.kind === "code" ? "코드" : "AI"}</span>
+                {p.name}
+              </span>
+              <span className="palette-text">{effectiveBody(p, overrides[p.id])}</span>
             </div>
           ))}
         </div>
-        {!hasTarget && <div className="palette-foot">전송할 터미널이 없어요 (전체 전송만 가능)</div>}
       </div>
     </div>
   );

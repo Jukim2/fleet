@@ -12,6 +12,9 @@ export async function loadConfig(): Promise<FleetConfig> {
       terminals: parsed.terminals ?? [],
       layouts: parsed.layouts ?? {},
       blocks: parsed.blocks ?? [],
+      // may be a legacy Record<projectId, Preset[]> on disk; migratePresets sorts it
+      presets: parsed.presets ?? [],
+      presetOverrides: parsed.presetOverrides ?? {},
       boards: parsed.boards ?? {},
       webTabs: parsed.webTabs ?? [],
       plans: parsed.plans ?? {},

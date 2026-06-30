@@ -45,3 +45,26 @@ pub fn clear_plan(cwd: String) -> Result<(), String> {
     }
     Ok(())
 }
+
+// --- Preset file (.fleet/preset.json, written by the AI preset generator) -----
+
+fn preset_path(cwd: &str) -> std::path::PathBuf {
+    std::path::Path::new(cwd).join(".fleet").join("preset.json")
+}
+
+/// Read the AI-generated preset JSON for a project, or null if not written yet.
+#[tauri::command]
+pub fn read_preset(cwd: String) -> Option<String> {
+    std::fs::read_to_string(preset_path(&cwd)).ok()
+}
+
+/// Delete the preset file before asking the generator to write a fresh one, so
+/// we can detect when the new one lands.
+#[tauri::command]
+pub fn clear_preset(cwd: String) -> Result<(), String> {
+    let p = preset_path(&cwd);
+    if p.exists() {
+        std::fs::remove_file(&p).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}

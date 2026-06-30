@@ -4,6 +4,10 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
+    "ensure-deps": "node scripts/ensure-deps.mjs",
+    "predev": "node scripts/ensure-deps.mjs",
+    "prebuild": "node scripts/ensure-deps.mjs",
+    "pretauri": "node scripts/ensure-deps.mjs",
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",

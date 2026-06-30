@@ -17,6 +17,11 @@
   color: var(--muted);
   padding: 2px 8px 12px;
 }
+.rail-head-btns {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
 .rail-list {
   overflow-y: auto;
   display: flex;

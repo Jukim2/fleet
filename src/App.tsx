@@ -4,10 +4,10 @@ import ProjectRail from "./features/projects/ProjectRail";
 import ProjectView from "./features/terminals/ProjectView";
 import CommandPalette from "./features/blocks/CommandPalette";
 import Drawer from "./features/drawer/Drawer";
-import QueueBoard from "./features/board/QueueBoard";
 import SettingsPanel from "./features/settings/SettingsPanel";
 import WebPanel from "./features/web/WebPanel";
 import PlanView from "./features/plan/PlanView";
+import "./features/presets/presets.css";
 import { ensureHookInstalled } from "./api/pty";
 import { wtProgress } from "./lib/worktree";
 import { checkForUpdate, UpdateAvailable } from "./api/system";
@@ -16,8 +16,8 @@ import { useFleet } from "./hooks/useFleet";
 export default function App() {
   const f = useFleet();
   const [paletteOpen, setPaletteOpen] = useState(false);
+  const [railOpen, setRailOpen] = useState(true);
   const [drawerOpen, setDrawerOpen] = useState(false);
-  const [boardOpen, setBoardOpen] = useState(false);
   const [planOpen, setPlanOpen] = useState(false);
   const [webOpen, setWebOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -73,38 +73,35 @@ export default function App() {
     if (picked && typeof picked === "string") f.relinkProject(projectId, picked);
   };
 
-  const openDrawer = (section: "blocks" | "queue") => {
-    if (section === "queue") {
-      setBoardOpen(true);
-      return;
-    }
-    setDrawerOpen(true);
-  };
-
   const activeProject = f.config.projects.find((p) => p.id === f.activeProjectId) ?? null;
-  const activeBoard = f.activeProjectId
-    ? f.config.boards[f.activeProjectId] ?? { running: false, lanes: [], tasks: [] }
-    : null;
 
   return (
-    <div className={`app ${drawerOpen ? "drawer-open" : ""}`}>
-      <ProjectRail
-        projects={f.config.projects}
-        activeId={f.activeProjectId}
-        liveByProject={f.liveByProject}
-        projectStatus={f.projectStatus}
-        sessions={f.sessions}
-        sessionsLoading={f.sessionsLoading}
-        onSelect={f.selectProject}
-        onAdd={pickFolder}
-        onRemove={f.removeProject}
-        onReorder={f.reorderProjects}
-        onRefreshSessions={f.refreshSessions}
-        onResume={f.resume}
-        onDeleteSession={f.deleteSession}
-        openSessionTerm={f.openSessionTerm}
-        onOpenSettings={() => setSettingsOpen(true)}
-      />
+    <div className={`app ${railOpen ? "rail-open" : ""} ${drawerOpen ? "drawer-open" : ""}`}>
+      {railOpen && (
+        <ProjectRail
+          projects={f.config.projects}
+          activeId={f.activeProjectId}
+          liveByProject={f.liveByProject}
+          projectStatus={f.projectStatus}
+          sessions={f.sessions}
+          sessionsLoading={f.sessionsLoading}
+          onSelect={f.selectProject}
+          onAdd={pickFolder}
+          onRemove={f.removeProject}
+          onReorder={f.reorderProjects}
+          onRefreshSessions={f.refreshSessions}
+          onResume={f.resume}
+          onDeleteSession={f.deleteSession}
+          openSessionTerm={f.openSessionTerm}
+          onOpenSettings={() => setSettingsOpen(true)}
+          onCollapse={() => setRailOpen(false)}
+        />
+      )}
+      {!railOpen && (
+        <button className="edge-toggle left" title="사이드바 열기" onClick={() => setRailOpen(true)}>
+          ›
+        </button>
+      )}
 
       <main className="stage-wrap">
         {f.config.projects.length === 0 ? (
@@ -142,10 +139,10 @@ export default function App() {
                 }
                 onMovePane={(source, target, zone) => f.movePane(p.id, source, target, zone)}
                 onStatus={f.setStatus}
-                onOpenPalette={() => setPaletteOpen(true)}
-                onOpenDrawer={openDrawer}
                 onOpenWeb={() => setWebOpen(true)}
                 onOpenPlan={() => setPlanOpen(true)}
+                presetsOpen={drawerOpen}
+                onTogglePresets={() => setDrawerOpen((o) => !o)}
                 wtActive={f.wtRuns[p.id] ? wtProgress(f.wtRuns[p.id]) : undefined}
               />
             ))
@@ -155,36 +152,20 @@ export default function App() {
       <Drawer
         open={drawerOpen}
         onClose={() => setDrawerOpen(false)}
-        blocks={f.config.blocks}
-        onChangeBlocks={f.setBlocks}
+        projectName={activeProject?.name}
+        presets={f.config.presets}
+        overrides={activeProject ? f.config.presetOverrides[activeProject.id] ?? {} : {}}
+        presetGen={f.presetGen}
+        onRun={(presetId) => activeProject && f.runPreset(activeProject.id, presetId)}
+        onSetPresets={f.setGlobalPresets}
+        onSetOverride={(presetId, ov) =>
+          activeProject && f.setPresetOverride(activeProject.id, presetId, ov)
+        }
+        onAiCreate={(name, kind, description) =>
+          activeProject && f.requestAiPreset(activeProject.id, name, kind, description)
+        }
+        onRefill={(presetId) => activeProject && f.refillPreset(activeProject.id, presetId)}
       />
-
-      {boardOpen && activeProject && activeBoard && (
-        <QueueBoard
-          project={activeProject}
-          terminals={f.config.terminals.filter((t) => t.projectId === activeProject.id)}
-          statuses={f.statuses}
-          board={activeBoard}
-          taskStatus={f.taskStatus}
-          blocks={f.config.blocks}
-          projects={f.config.projects}
-          boards={f.config.boards}
-          allTerminals={f.config.terminals}
-          onClose={() => setBoardOpen(false)}
-          onAddLane={(target, title) => f.addLane(activeProject.id, target, title)}
-          onRemoveLane={(laneId) => f.removeLane(activeProject.id, laneId)}
-          onAddTask={(laneId, text) => f.addTask(activeProject.id, laneId, text)}
-          onRemoveTask={(taskId) => f.removeTask(activeProject.id, taskId)}
-          onSetDeps={(taskId, deps) => f.setTaskDeps(activeProject.id, taskId, deps)}
-          onAddBlock={(text) =>
-            f.setBlocks([...f.config.blocks, { id: crypto.randomUUID(), name: text.slice(0, 24), text }])
-          }
-          onToggleRunningProject={f.toggleBoardRunning}
-          onResetProject={f.resetBoard}
-          onOpenProject={f.selectProject}
-          onAddProject={pickFolder}
-        />
-      )}
 
       {planOpen && activeProject && (
         <PlanView
@@ -195,7 +176,6 @@ export default function App() {
           terminals={f.config.terminals.filter((t) => t.projectId === activeProject.id)}
           planning={f.planning === activeProject.id}
           onRequestPlan={(goal) => f.requestPlan(activeProject.id, goal)}
-          onLoadPlan={() => f.loadPlan(activeProject.id)}
           onRunSteps={(stepIds, target) => f.runSteps(activeProject.id, stepIds, target)}
           onToggleCollapse={(nodeId, current) => f.toggleCollapsed(activeProject.id, nodeId, current)}
           onRemovePlan={() => f.removePlan(activeProject.id)}
@@ -205,6 +185,10 @@ export default function App() {
           onRenameNode={(id, title) => f.renameNode(activeProject.id, id, title)}
           onEditStep={(id, patch) => f.editStep(activeProject.id, id, patch)}
           onRemoveNode={(id) => f.removePlanNode(activeProject.id, id)}
+          onSetStepDeps={(stepId, deps) => f.setStepDeps(activeProject.id, stepId, deps)}
+          onSetStepFeature={(stepId, featureId) =>
+            f.setStepFeature(activeProject.id, stepId, featureId)
+          }
           wtRun={f.wtRuns[activeProject.id]}
           wtLastRun={f.wtLastRun[activeProject.id]}
           wtMsg={f.wtMsg[activeProject.id]}
@@ -212,9 +196,26 @@ export default function App() {
           onResolveFinalize={() => f.resolveFinalize(activeProject.id)}
           cardScale={f.config.planCardScale ?? 1}
           onSetCardScale={f.setPlanCardScale}
+          board={f.config.boards[activeProject.id]}
+          savedView={f.config.planViews?.[activeProject.id]}
+          onSetView={(v) => f.setPlanView(activeProject.id, v)}
+          focusIds={
+            ((raw) => (Array.isArray(raw) ? raw : raw ? [raw] : []))(
+              f.config.planFocus?.[activeProject.id],
+            )
+          }
+          onSetFocus={(ids) => f.setPlanFocus(activeProject.id, ids)}
+          dir={f.config.planDir ?? "LR"}
+          sort={f.config.planSort ?? "added"}
+          onSetDir={f.setPlanDir}
+          onSetSort={f.setPlanSort}
+          onJumpToStep={(termId) => {
+            f.showWtStep(activeProject.id, termId);
+            setPlanOpen(false);
+          }}
           onStopWtRun={() => f.stopWtRun(activeProject.id)}
+          onStopBoardRun={() => f.stopBoardRun(activeProject.id)}
           onClearWtLastRun={() => f.clearWtLastRun(activeProject.id)}
-          onShowStep={(termId) => f.showWtStep(activeProject.id, termId)}
           onClearWtMsg={() => f.clearWtMsg(activeProject.id)}
           onClose={() => setPlanOpen(false)}
         />
@@ -235,11 +236,10 @@ export default function App() {
 
       <CommandPalette
         open={paletteOpen}
-        blocks={f.config.blocks}
-        hasTarget={!!f.focusedTermId}
+        presets={f.config.presets}
+        overrides={activeProject ? f.config.presetOverrides[activeProject.id] ?? {} : {}}
         onClose={() => setPaletteOpen(false)}
-        onSend={f.sendBlock}
-        onBroadcast={f.broadcastBlock}
+        onRun={(presetId) => activeProject && f.runPreset(activeProject.id, presetId)}
       />
 
       {settingsOpen && (
@@ -255,6 +255,19 @@ export default function App() {
         <button className="update-pill" onClick={() => setSettingsOpen(true)}>
           새 버전 <b>v{launchUpdate.version}</b> 사용 가능 · 설치
         </button>
+      )}
+
+      {f.toasts.length > 0 && (
+        <div className="toast-wrap">
+          {f.toasts.map((t) => (
+            <div key={t.id} className={`toast ${t.kind}`}>
+              <span className="toast-text">{t.text}</span>
+              <button className="toast-x" onClick={() => f.dismissToast(t.id)} title="닫기">
+                ✕
+              </button>
+            </div>
+          ))}
+        </div>
       )}
     </div>
   );

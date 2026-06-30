@@ -38,6 +38,7 @@ export default function ProjectRail({
   onDeleteSession,
   openSessionTerm,
   onOpenSettings,
+  onCollapse,
 }: {
   projects: Project[];
   activeId: string | null;
@@ -56,6 +57,7 @@ export default function ProjectRail({
   /** resume-session id → open terminal id, for the "이미 열림" marker */
   openSessionTerm: Record<string, string>;
   onOpenSettings: () => void;
+  onCollapse: () => void;
 }) {
   const [query, setQuery] = useState("");
   const filtered = useMemo(() => {
@@ -68,9 +70,14 @@ export default function ProjectRail({
     <nav className="rail">
       <div className="rail-head">
         <span>Fleet</span>
-        <button className="icon-btn" title="설정 · 진단" onClick={onOpenSettings}>
-          ⚙
-        </button>
+        <div className="rail-head-btns">
+          <button className="icon-btn" title="설정 · 진단" onClick={onOpenSettings}>
+            ⚙
+          </button>
+          <button className="icon-btn" title="사이드바 접기" onClick={onCollapse}>
+            ‹
+          </button>
+        </div>
       </div>
 
       <div className="rail-list">

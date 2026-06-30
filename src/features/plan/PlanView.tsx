@@ -1,9 +1,22 @@
-import { CSSProperties, useEffect, useMemo, useState } from "react";
-import { Plan, PlanStep, Project, TaskStatus, Terminal, TermStatus } from "../../types";
+import { CSSProperties, useEffect, useMemo, useRef, useState } from "react";
+import {
+  Plan,
+  PlanDir,
+  PlanFeature,
+  PlanSort,
+  PlanStep,
+  PlanViewport,
+  Project,
+  QueueBoard,
+  TaskStatus,
+  Terminal,
+  TermStatus,
+} from "../../types";
 import { gitIsRepo } from "../../api/git";
 import { openPath } from "../../api/system";
+import { laneLiveTerm } from "../../lib/board";
 import { ClaudeEffort, RunTarget } from "../../lib/plan";
-import { layoutPlan } from "../../lib/planLayout";
+import { criticalPath, layoutPlan } from "../../lib/planLayout";
 import { PHASE_LABEL, WtFix, WtLogEntry, WtPhase, WtRun, WtStep, wtProgress } from "../../lib/worktree";
 import "./plan.css";
 
@@ -13,6 +26,21 @@ function stepState(s: PlanStep, ts: Record<string, TaskStatus>): StepState {
   if (ts[s.id] === "running") return "running";
   return s.deps.every((d) => ts[d] === "done") ? "ready" : "blocked";
 }
+const MIN_K = 0.3;
+const MAX_K = 2.5;
+const clampK = (k: number) => Math.min(MAX_K, Math.max(MIN_K, k));
+
+const WT_ACTIVE = ["running", "committing", "merging", "resolving"];
+/** elapsed ms → "m:ss" (or "h:mm:ss" past an hour) */
+const fmtElapsed = (ms: number): string => {
+  const s = Math.max(0, Math.floor(ms / 1000));
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = s % 60;
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return h ? `${h}:${pad(m)}:${pad(sec)}` : `${m}:${pad(sec)}`;
+};
+
 const STATE_LABEL: Record<StepState, string> = {
   done: "완료",
   running: "실행 중",
@@ -28,7 +56,6 @@ export default function PlanView({
   terminals,
   planning,
   onRequestPlan,
-  onLoadPlan,
   onRunSteps,
   onToggleCollapse,
   onRemovePlan,
@@ -38,17 +65,29 @@ export default function PlanView({
   onRenameNode,
   onEditStep,
   onRemoveNode,
+  onSetStepDeps,
+  onSetStepFeature,
   wtRun,
   wtLastRun,
   wtMsg,
   wtFix,
   onResolveFinalize,
   onStopWtRun,
+  onStopBoardRun,
   onClearWtLastRun,
-  onShowStep,
   onClearWtMsg,
   cardScale,
   onSetCardScale,
+  board,
+  savedView,
+  onSetView,
+  focusIds,
+  onSetFocus,
+  dir,
+  sort,
+  onSetDir,
+  onSetSort,
+  onJumpToStep,
   onClose,
 }: {
   project: Project;
@@ -57,19 +96,29 @@ export default function PlanView({
   statuses: Record<string, TermStatus>;
   terminals: Terminal[];
   planning: boolean;
+  board?: QueueBoard;
+  savedView?: PlanViewport;
+  onSetView: (v: PlanViewport) => void;
+  /** focused 대블럭/중블럭 ids ([] = 전체 보기) */
+  focusIds: string[];
+  onSetFocus: (ids: string[]) => void;
+  dir: PlanDir;
+  sort: PlanSort;
+  onSetDir: (dir: PlanDir) => void;
+  onSetSort: (sort: PlanSort) => void;
+  onJumpToStep: (termId: string) => void;
   wtRun?: WtRun;
   wtLastRun?: WtRun;
   wtMsg?: string;
   wtFix?: WtFix;
   onResolveFinalize: () => void;
   onStopWtRun: () => void;
+  onStopBoardRun: () => void;
   onClearWtLastRun: () => void;
-  onShowStep: (termId: string) => void;
   onClearWtMsg: () => void;
   cardScale: number;
   onSetCardScale: (scale: number) => void;
   onRequestPlan: (goal: string) => void;
-  onLoadPlan: () => void;
   onRunSteps: (stepIds: string[], target: RunTarget) => void;
   onToggleCollapse: (nodeId: string, current: boolean) => void;
   onRemovePlan: () => void;
@@ -79,14 +128,293 @@ export default function PlanView({
   onRenameNode: (id: string, title: string) => void;
   onEditStep: (id: string, patch: { title?: string; prompt?: string }) => void;
   onRemoveNode: (id: string) => void;
+  onSetStepDeps: (stepId: string, deps: string[]) => void;
+  onSetStepFeature: (stepId: string, featureId: string) => void;
   onClose: () => void;
 }) {
   const [goal, setGoal] = useState("");
+  const [goalOpen, setGoalOpen] = useState(false); // header "＋ AI로 추가" popover
   const [sel, setSel] = useState<Set<string>>(new Set());
   const [runOpen, setRunOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null); // inline title rename
   const [stepEdit, setStepEdit] = useState<PlanStep | null>(null); // step editor modal
   const [gitRepo, setGitRepo] = useState<boolean | null>(null); // is the project a git repo?
+  const [tocOpen, setTocOpen] = useState<Record<string, boolean>>({}); // outline: 대블럭 expanded?
+  const toggleTocOpen = (id: string) => setTocOpen((m) => ({ ...m, [id]: !(m[id] ?? true) }));
+
+  // focusIds is a fresh array each render (App spreads it); derive a stable key
+  // for effect/memo deps and a Set for membership checks.
+  const focusKey = focusIds.slice().sort().join("|");
+  const focusSet = useMemo(() => new Set(focusIds), [focusKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  // TOC click: plain click focuses just this block (clicking the sole-focused one
+  // clears back to 전체); Ctrl/⌘/Shift-click adds/removes it from the selection.
+  const pickFocus = (id: string, e: React.MouseEvent) => {
+    if (e.metaKey || e.ctrlKey || e.shiftKey)
+      onSetFocus(focusSet.has(id) ? focusIds.filter((x) => x !== id) : [...focusIds, id]);
+    else onSetFocus(focusSet.has(id) && focusIds.length === 1 ? [] : [id]);
+  };
+
+  // --- canvas viewport (pan + zoom) ---
+  // The whole graph is transformed by translate(x,y)·scale(k); the auto-layout is
+  // untouched, we just move/scale the "world" inside the clipping canvas.
+  const canvasRef = useRef<HTMLDivElement>(null);
+  const [view, setView] = useState<PlanViewport>(savedView ?? { x: 24, y: 24, k: 1 });
+  const viewRef = useRef(view);
+  viewRef.current = view;
+  const [panning, setPanning] = useState(false);
+  const panRef = useRef<{ sx: number; sy: number; ox: number; oy: number } | null>(null);
+  const spaceHeld = useRef(false); // Space → left-drag pans (even over nodes)
+  // --- camera easing: programmatic view changes (fit / zoom buttons / focus
+  // switch) glide; interactive pan/wheel are instant (cancel the glide). ---
+  const [vAnim, setVAnim] = useState(false);
+  const vAnimRef = useRef(false);
+  const animTimer = useRef<number | undefined>(undefined);
+  const setAnim = (on: boolean) => {
+    vAnimRef.current = on;
+    setVAnim(on);
+  };
+  const animateView = () => {
+    setAnim(true);
+    window.clearTimeout(animTimer.current);
+    animTimer.current = window.setTimeout(() => setAnim(false), 460);
+  };
+  const cancelAnim = () => {
+    if (!vAnimRef.current) return;
+    window.clearTimeout(animTimer.current);
+    setAnim(false);
+  };
+  // --- manual dependency linking: drag from a step's handle onto another step ---
+  const [link, setLink] = useState<{ from: string; x: number; y: number } | null>(null);
+  const linkRef = useRef(link);
+  linkRef.current = link;
+  const suppressClick = useRef(false); // skip the click that ends a link/marquee gesture
+  // --- marquee box-select: left-drag on empty canvas selects steps inside ---
+  const [marquee, setMarquee] = useState<{ x0: number; y0: number; x1: number; y1: number } | null>(null);
+  const marqueeRef = useRef(marquee);
+  marqueeRef.current = marquee;
+  const layoutRef = useRef<ReturnType<typeof layoutPlan> | null>(null);
+  // --- drag-to-reparent: drag a step's header onto a feature (or sibling step) ---
+  const [drag, setDrag] = useState<{ stepId: string; x: number; y: number } | null>(null); // ghost pos (world)
+  const dragRef = useRef(drag);
+  dragRef.current = drag;
+  const dragArm = useRef<{ stepId: string; sx: number; sy: number } | null>(null); // pre-threshold
+  const [dropFeat, setDropFeat] = useState<string | null>(null); // feature id under cursor
+  const stepByIdRef = useRef<Record<string, PlanStep>>({});
+  const reparentRef = useRef(onSetStepFeature); // avoid stale closure in window handlers
+  reparentRef.current = onSetStepFeature;
+  // --- per-step elapsed time: when a step's session started working ---
+  const startAt = useRef<Record<string, number>>({});
+  const [nowTs, setNowTs] = useState(0);
+
+  // screen → world coords inside the transformed graph
+  const toWorld = (clientX: number, clientY: number) => {
+    const r = canvasRef.current?.getBoundingClientRect();
+    const v = viewRef.current;
+    return {
+      x: (clientX - (r?.left ?? 0) - v.x) / v.k,
+      y: (clientY - (r?.top ?? 0) - v.y) / v.k,
+    };
+  };
+
+  // persist viewport (debounced) so pan/zoom survives reopen — never per-frame
+  useEffect(() => {
+    const t = window.setTimeout(() => onSetView(view), 400);
+    return () => window.clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [view]);
+
+  // the feature a screen point would drop a step into (feature node, or a sibling
+  // step's feature); excludes the dragged step itself
+  const dropFeatureAt = (clientX: number, clientY: number, exceptStep: string): string | null => {
+    const w = toWorld(clientX, clientY);
+    const hit = (layoutRef.current?.nodes ?? []).find(
+      (n) =>
+        (n.kind === "feature" || n.kind === "step") &&
+        n.id !== exceptStep &&
+        w.x >= n.x &&
+        w.x <= n.x + n.w &&
+        w.y >= n.y &&
+        w.y <= n.y + n.h,
+    );
+    if (!hit) return null;
+    return hit.kind === "feature" ? hit.id : stepByIdRef.current[hit.id]?.featureId ?? null;
+  };
+
+  // pan + link line + marquee + drag-to-reparent, driven by window mouse events
+  useEffect(() => {
+    const move = (e: MouseEvent) => {
+      if (panRef.current) {
+        const p = panRef.current;
+        setView((v) => ({ ...v, x: p.ox + (e.clientX - p.sx), y: p.oy + (e.clientY - p.sy) }));
+        return;
+      }
+      if (linkRef.current) {
+        const w = toWorld(e.clientX, e.clientY);
+        setLink((l) => (l ? { ...l, x: w.x, y: w.y } : l));
+        return;
+      }
+      if (marqueeRef.current) {
+        const w = toWorld(e.clientX, e.clientY);
+        setMarquee((m) => (m ? { ...m, x1: w.x, y1: w.y } : m));
+        return;
+      }
+      // arm → drag once past a small threshold, then track ghost + drop target
+      const arm = dragArm.current;
+      if (arm && !dragRef.current) {
+        if (Math.abs(e.clientX - arm.sx) + Math.abs(e.clientY - arm.sy) > 5) {
+          const w = toWorld(e.clientX, e.clientY);
+          setDrag({ stepId: arm.stepId, x: w.x, y: w.y });
+        }
+      }
+      if (dragRef.current) {
+        const w = toWorld(e.clientX, e.clientY);
+        const sid = dragRef.current.stepId;
+        setDrag((d) => (d ? { ...d, x: w.x, y: w.y } : d));
+        const feat = dropFeatureAt(e.clientX, e.clientY, sid);
+        const cur = stepByIdRef.current[sid]?.featureId;
+        setDropFeat(feat && feat !== cur ? feat : null);
+      }
+    };
+    const up = (e: MouseEvent) => {
+      if (panRef.current) {
+        panRef.current = null;
+        setPanning(false);
+      }
+      if (linkRef.current) setLink(null); // released on empty space → cancel
+      const mq = marqueeRef.current;
+      if (mq) {
+        // select every step whose card intersects the box
+        const lo = { x: Math.min(mq.x0, mq.x1), y: Math.min(mq.y0, mq.y1) };
+        const hi = { x: Math.max(mq.x0, mq.x1), y: Math.max(mq.y0, mq.y1) };
+        const hit = (layoutRef.current?.nodes ?? [])
+          .filter((n) => n.kind === "step")
+          .filter((n) => n.x < hi.x && n.x + n.w > lo.x && n.y < hi.y && n.y + n.h > lo.y)
+          .map((n) => n.id);
+        if (hit.length || !e.shiftKey)
+          setSel((s) => (e.shiftKey ? new Set([...s, ...hit]) : new Set(hit)));
+        suppressClick.current = true;
+        setMarquee(null);
+      }
+      const d = dragRef.current;
+      if (d) {
+        const feat = dropFeatureAt(e.clientX, e.clientY, d.stepId);
+        const cur = stepByIdRef.current[d.stepId]?.featureId;
+        if (feat && feat !== cur) reparentRef.current(d.stepId, feat);
+        suppressClick.current = true;
+        setDrag(null);
+        setDropFeat(null);
+      }
+      dragArm.current = null;
+    };
+    window.addEventListener("mousemove", move);
+    window.addEventListener("mouseup", up);
+    return () => {
+      window.removeEventListener("mousemove", move);
+      window.removeEventListener("mouseup", up);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Space toggles pan-drag mode (tracked globally so it works while over nodes)
+  useEffect(() => {
+    const isTyping = (el: EventTarget | null) =>
+      el instanceof HTMLElement && (el.tagName === "INPUT" || el.tagName === "TEXTAREA");
+    const down = (e: KeyboardEvent) => {
+      if (e.key === " " && !isTyping(e.target)) {
+        spaceHeld.current = true;
+        e.preventDefault();
+      } else if (e.key === "Escape") {
+        if (linkRef.current) setLink(null);
+        else if (marqueeRef.current) setMarquee(null);
+        else if (!isTyping(e.target)) onClose();
+      } else if ((e.key === "f" || e.key === "F") && !isTyping(e.target)) {
+        fitView();
+      } else if (e.key === "0" && !isTyping(e.target)) {
+        animateView();
+        setView((v) => ({ ...v, k: 1 }));
+      }
+    };
+    const up = (e: KeyboardEvent) => {
+      if (e.key === " ") spaceHeld.current = false;
+    };
+    window.addEventListener("keydown", down);
+    window.addEventListener("keyup", up);
+    return () => {
+      window.removeEventListener("keydown", down);
+      window.removeEventListener("keyup", up);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // wheel zoom toward the cursor (native listener so preventDefault isn't passive-blocked)
+  useEffect(() => {
+    const el = canvasRef.current;
+    if (!el) return;
+    const onWheel = (e: WheelEvent) => {
+      // let a scrollable instruction textarea scroll instead of zooming
+      const ta = (e.target as HTMLElement).closest?.(".plan-node-prompt") as HTMLTextAreaElement | null;
+      if (ta && ta.scrollHeight > ta.clientHeight) return;
+      e.preventDefault();
+      cancelAnim(); // wheel zoom is instant, not glided
+      const r = el.getBoundingClientRect();
+      const px = e.clientX - r.left;
+      const py = e.clientY - r.top;
+      setView((v) => {
+        const k = clampK(v.k * (e.deltaY < 0 ? 1.1 : 1 / 1.1));
+        const wx = (px - v.x) / v.k;
+        const wy = (py - v.y) / v.k;
+        return { k, x: px - wx * k, y: py - wy * k };
+      });
+    };
+    el.addEventListener("wheel", onWheel, { passive: false });
+    return () => el.removeEventListener("wheel", onWheel);
+  }, []);
+
+  const startPan = (e: { clientX: number; clientY: number }) => {
+    cancelAnim(); // dragging is instant, not glided
+    panRef.current = { sx: e.clientX, sy: e.clientY, ox: viewRef.current.x, oy: viewRef.current.y };
+    setPanning(true);
+  };
+
+  // capture phase: Space+left starts a pan before nodes/textarea see the event
+  const onCanvasMouseDownCapture = (e: React.MouseEvent) => {
+    if (spaceHeld.current && e.button === 0) {
+      startPan(e);
+      e.preventDefault();
+      e.stopPropagation();
+    }
+  };
+
+  const onCanvasMouseDown = (e: React.MouseEvent) => {
+    if (panRef.current) return; // already handled in capture (Space+left)
+    const t = e.target as HTMLElement;
+    const onBg =
+      t === canvasRef.current ||
+      t.classList.contains("plan-viewport") ||
+      t.classList.contains("plan-graph");
+    if (e.button === 2 || e.button === 1) {
+      startPan(e); // right / middle drag → pan
+      e.preventDefault();
+    } else if (e.button === 0 && onBg) {
+      const w = toWorld(e.clientX, e.clientY); // left drag on empty canvas → marquee
+      setMarquee({ x0: w.x, y0: w.y, x1: w.x, y1: w.y });
+      e.preventDefault();
+    }
+  };
+
+  // zoom around the canvas center (button controls) — glided
+  const zoomBy = (factor: number) => {
+    animateView();
+    setView((v) => {
+      const r = canvasRef.current?.getBoundingClientRect();
+      const px = (r?.width ?? 0) / 2;
+      const py = (r?.height ?? 0) / 2;
+      const k = clampK(v.k * factor);
+      const wx = (px - v.x) / v.k;
+      const wy = (py - v.y) / v.k;
+      return { k, x: px - wx * k, y: py - wy * k };
+    });
+  };
 
   useEffect(() => {
     let alive = true;
@@ -136,9 +464,56 @@ export default function PlanView({
         return isCollapsed(id, ids);
       },
       cardScale,
+      dir,
+      sort,
+      focusIds,
     );
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [plan, effTs, stepIdsUnderTheme, stepIdsUnderFeature, cardScale]);
+  }, [plan, effTs, stepIdsUnderTheme, stepIdsUnderFeature, cardScale, dir, sort, focusKey]);
+
+  layoutRef.current = layout; // marquee hit-test reads the latest node geometry
+
+  // fit the graph into the canvas, centered. Fit to the actual node bounding box
+  // (not layout.width/height — those reserve empty bow-padding on the deps' side,
+  // which would push the content off-center), then center that box in the canvas.
+  const fitView = () => {
+    const r = canvasRef.current?.getBoundingClientRect();
+    if (!r || !layout || layout.nodes.length === 0) return;
+    const pad = 56;
+    const minX = Math.min(...layout.nodes.map((n) => n.x));
+    const minY = Math.min(...layout.nodes.map((n) => n.y));
+    const maxX = Math.max(...layout.nodes.map((n) => n.x + n.w));
+    const maxY = Math.max(...layout.nodes.map((n) => n.y + n.h));
+    const w = maxX - minX || 1;
+    const h = maxY - minY || 1;
+    const k = clampK(Math.min((r.width - pad) / w, (r.height - pad) / h));
+    animateView();
+    setView({ k, x: (r.width - w * k) / 2 - minX * k, y: (r.height - h * k) / 2 - minY * k });
+  };
+
+  // re-fit when the flow direction changes (the old pan/zoom no longer matches);
+  // skip the first run so a saved viewport is respected on open
+  const dirInit = useRef(true);
+  useEffect(() => {
+    if (dirInit.current) {
+      dirInit.current = false;
+      return;
+    }
+    fitView();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dir]);
+
+  // re-fit when the focused blocks change (the filtered graph is a new shape);
+  // skip the first run so a saved viewport is respected on open
+  const focusInit = useRef(true);
+  useEffect(() => {
+    if (focusInit.current) {
+      focusInit.current = false;
+      return;
+    }
+    fitView();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusKey]);
 
   const total = plan?.steps.length ?? 0;
   const done = (plan?.steps ?? []).filter((s) => effTs[s.id] === "done").length;
@@ -163,11 +538,66 @@ export default function PlanView({
     () => Object.fromEntries((plan?.steps ?? []).map((s) => [s.id, s])),
     [plan],
   );
+
+  // 대블럭별 중블럭 묶음 — 왼쪽 목차(아웃라인)용
+  const featuresByTheme = useMemo(() => {
+    const m: Record<string, PlanFeature[]> = {};
+    for (const fe of plan?.features ?? []) (m[fe.themeId] ??= []).push(fe);
+    return m;
+  }, [plan]);
+  stepByIdRef.current = stepById; // for drop-target resolution inside window handlers
   const wtByStep = useMemo(() => {
     const m: Record<string, WtStep> = {};
     for (const s of wtRun?.steps ?? []) m[s.stepId] = s;
     return m;
   }, [wtRun]);
+
+  // stepId → the live terminal running it (worktree step, or a board lane task)
+  const stepTerm = useMemo(() => {
+    const m: Record<string, string> = {};
+    for (const s of wtRun?.steps ?? []) {
+      const term = s.resolveTermId ?? s.termId;
+      if (term) m[s.stepId] = term;
+    }
+    if (board) {
+      const laneById = new Map(board.lanes.map((l) => [l.id, l]));
+      for (const t of board.tasks) {
+        const lane = laneById.get(t.laneId);
+        const term = lane && laneLiveTerm(lane);
+        if (term) m[t.id] = term;
+      }
+    }
+    return m;
+  }, [wtRun, board]);
+
+  // [2순위] critical path (longest dependency chain) — toggled on demand
+  const [showCrit, setShowCrit] = useState(false);
+  const crit = useMemo(() => (plan ? criticalPath(plan) : null), [plan]);
+  // steps runnable right now: not done/running and every dep already done
+  const readyIds = useMemo(
+    () => (plan?.steps ?? []).filter((s) => stepState(s, effTs) === "ready").map((s) => s.id),
+    [plan, effTs],
+  );
+
+  // [1순위] track when each step's session started working, for an elapsed clock
+  useEffect(() => {
+    const active = new Set<string>();
+    for (const s of plan?.steps ?? []) {
+      const wt = wtByStep[s.id];
+      const isActive = wt ? WT_ACTIVE.includes(wt.phase) : stepState(s, effTs) === "running";
+      if (isActive) active.add(s.id);
+    }
+    const t = startAt.current;
+    for (const id of active) if (!(id in t)) t[id] = Date.now();
+    for (const id of Object.keys(t)) if (!active.has(id)) delete t[id];
+  }, [plan, effTs, wtByStep]);
+
+  // 1s tick so the elapsed clocks advance while the plan is open
+  useEffect(() => {
+    if (!hasGraph) return;
+    const id = window.setInterval(() => setNowTs(Date.now()), 1000);
+    return () => window.clearInterval(id);
+  }, [hasGraph]);
 
   // inline rename input shared by theme/feature nodes
   const renameInput = (id: string, title: string) => (
@@ -222,8 +652,66 @@ export default function PlanView({
                 ＋
               </button>
             </div>
-            <button className="btn" onClick={onAddTheme} title="테마를 직접 추가">
-              ＋ 테마
+            <LayoutMenu dir={dir} sort={sort} onSetDir={onSetDir} onSetSort={onSetSort} />
+            {hasGraph && (crit?.length ?? 0) > 1 && (
+              <button
+                className={`btn ${showCrit ? "primary" : ""}`}
+                onClick={() => setShowCrit((v) => !v)}
+                title="가장 긴 선행 사슬(병목)을 초록색으로 강조 — 이 사슬 길이가 플랜의 최소 단계 수를 정해요"
+              >
+                ⟂ 병목경로{showCrit ? ` · ${crit?.length}` : ""}
+              </button>
+            )}
+            {/* AI 요청 추가 — 헤더 버튼을 눌러 입력 팝오버를 연다 (세로 공간 절약) */}
+            <div className="plan-goalmenu" onMouseDown={(e) => e.stopPropagation()}>
+              <button
+                className="btn primary"
+                onClick={() => setGoalOpen((o) => !o)}
+                disabled={planning}
+                title="요청을 입력하면 대블럭 → 중블럭 → 소블럭으로 분해해 그래프에 더해요"
+              >
+                {planning ? "구성 중…" : "＋ AI로 추가"}
+              </button>
+              {goalOpen && !planning && (
+                <>
+                  <div className="plan-menu-backdrop" onClick={() => setGoalOpen(false)} />
+                  <div className="plan-menu plan-goalpop">
+                    <div className="plan-menu-label">AI로 요청 추가</div>
+                    <textarea
+                      className="plan-goalpop-in"
+                      autoFocus
+                      placeholder="요청을 입력하면 대블럭 → 중블럭 → 소블럭으로 분해해 그래프에 더해요  (예: UI 개선 — 다크모드)"
+                      value={goal}
+                      onChange={(e) => setGoal(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" && !e.shiftKey && goal.trim()) {
+                          e.preventDefault();
+                          onRequestPlan(goal.trim());
+                          setGoal("");
+                          setGoalOpen(false);
+                        }
+                      }}
+                    />
+                    <div className="plan-goalpop-actions">
+                      <span className="plan-goalpop-hint">Enter 추가 · Shift+Enter 줄바꿈</span>
+                      <button
+                        className="btn primary"
+                        disabled={!goal.trim()}
+                        onClick={() => {
+                          onRequestPlan(goal.trim());
+                          setGoal("");
+                          setGoalOpen(false);
+                        }}
+                      >
+                        요청 추가
+                      </button>
+                    </div>
+                  </div>
+                </>
+              )}
+            </div>
+            <button className="btn" onClick={onAddTheme} title="대블럭을 직접 추가">
+              ＋ 대블럭
             </button>
             <button className="icon-btn" onClick={onClose} title="닫기">
               ✕
@@ -231,32 +719,6 @@ export default function PlanView({
           </div>
         </header>
 
-        {/* Goal input — generate (merges into the graph) or load a plan */}
-        <div className="plan-goal">
-          <input
-            className="plan-goal-in"
-            placeholder="요청을 입력하면 테마→기능→단계로 분해해 그래프에 더해요  (예: UI 개선 — 다크모드)"
-            value={goal}
-            onChange={(e) => setGoal(e.target.value)}
-            onKeyDown={(e) =>
-              e.key === "Enter" && !planning && goal.trim() && (onRequestPlan(goal.trim()), setGoal(""))
-            }
-            disabled={planning}
-          />
-          <button
-            className="btn primary"
-            disabled={planning || !goal.trim()}
-            onClick={() => {
-              onRequestPlan(goal.trim());
-              setGoal("");
-            }}
-          >
-            {planning ? "구성 중…" : "요청 추가"}
-          </button>
-          <button className="btn" onClick={onLoadPlan} title="이미 만들어진 .fleet/plan.json 읽기">
-            불러오기
-          </button>
-        </div>
         {planning && (
           <div className="plan-note">
             플래너 세션이 <code>.fleet/plan.json</code>을 작성하는 중… 완료되면 그래프에 자동 반영돼요.
@@ -285,17 +747,114 @@ export default function PlanView({
           />
         )}
 
+        {/* Non-worktree run — steps dispatched onto live terminals. Offer a stop. */}
+        {!wtRun && board?.running && (
+          <div className="plan-runbar">
+            <span className="plan-runbar-dot" />
+            <span className="plan-runbar-text">
+              실행 중 · {board.tasks.filter((t) => taskStatus[t.id] === "done").length}/
+              {board.tasks.length} 완료
+            </span>
+            <button className="plan-runbar-stop" onClick={onStopBoardRun}>
+              중단
+            </button>
+          </div>
+        )}
+
+        {/* Body: outline (목차) + graph canvas */}
+        <div className="plan-body">
+          {hasGraph && (plan?.themes.length ?? 0) > 0 && (
+            <aside className="plan-toc" onMouseDown={(e) => e.stopPropagation()}>
+              <button
+                className={`plan-toc-all ${focusIds.length === 0 ? "on" : ""}`}
+                onClick={() => onSetFocus([])}
+                title="모든 대블럭을 한 화면에 보기 · Ctrl/⌘+클릭으로 여러 블럭 선택"
+              >
+                <span className="plan-toc-label">전체 보기</span>
+                {total > 0 && (
+                  <span className="plan-toc-count">
+                    {done}/{total}
+                  </span>
+                )}
+              </button>
+              <div className="plan-toc-list">
+                {(plan?.themes ?? []).map((t) => {
+                  const tIds = stepIdsUnderTheme[t.id] ?? [];
+                  const feats = featuresByTheme[t.id] ?? [];
+                  const expanded = tocOpen[t.id] ?? true;
+                  const allDone = tIds.length > 0 && doneOf(tIds) === tIds.length;
+                  return (
+                    <div className="plan-toc-grp" key={t.id}>
+                      <div className={`plan-toc-row theme ${focusSet.has(t.id) ? "on" : ""}`}>
+                        <button
+                          className="plan-toc-caret"
+                          disabled={feats.length === 0}
+                          onClick={() => toggleTocOpen(t.id)}
+                          title={expanded ? "접기" : "펼치기"}
+                        >
+                          {feats.length === 0 ? "" : expanded ? "▾" : "▸"}
+                        </button>
+                        <button
+                          className="plan-toc-label"
+                          onClick={(e) => pickFocus(t.id, e)}
+                          title={`${t.title} — 클릭: 이 대블럭만 · Ctrl/⌘+클릭: 여러 개`}
+                        >
+                          {t.title}
+                        </button>
+                        <span className={`plan-toc-count ${allDone ? "done" : ""}`}>
+                          {allDone ? "✓ " : ""}
+                          {doneOf(tIds)}/{tIds.length}
+                        </span>
+                      </div>
+                      {expanded &&
+                        feats.map((fe) => {
+                          const fIds = stepIdsUnderFeature[fe.id] ?? [];
+                          const fDone = fIds.length > 0 && doneOf(fIds) === fIds.length;
+                          return (
+                            <button
+                              key={fe.id}
+                              className={`plan-toc-row feature ${focusSet.has(fe.id) ? "on" : ""}`}
+                              onClick={(e) => pickFocus(fe.id, e)}
+                              title={`${fe.title} — 클릭: 이 중블럭만 · Ctrl/⌘+클릭: 여러 개`}
+                            >
+                              <span className="plan-toc-label">{fe.title}</span>
+                              <span className={`plan-toc-count ${fDone ? "done" : ""}`}>
+                                {doneOf(fIds)}/{fIds.length}
+                              </span>
+                            </button>
+                          );
+                        })}
+                    </div>
+                  );
+                })}
+              </div>
+            </aside>
+          )}
+
         {/* Graph canvas */}
-        <div className="plan-canvas">
+        <div
+          className={`plan-canvas ${panning ? "panning" : ""} ${link ? "linking" : ""} ${
+            marquee ? "marqueeing" : ""
+          }`}
+          ref={canvasRef}
+          onMouseDownCapture={onCanvasMouseDownCapture}
+          onMouseDown={onCanvasMouseDown}
+          onContextMenu={(e) => e.preventDefault()}
+        >
           {!hasGraph || !layout ? (
             <div className="plan-empty">
-              아직 플랜이 없어요. 위에 요청을 입력하고 <b>요청 추가</b>를 누르면 테마 → 기능 → 단계
+              아직 플랜이 없어요. 오른쪽 위 <b>＋ AI로 추가</b>에 요청을 입력하면 대블럭 → 중블럭 → 소블럭
               그래프로 쌓이고,
               <br />
-              이어지는 요청도 같은 그래프에 붙어요. 직접 만들려면 <b>＋ 테마</b>로 시작하세요.
+              이어지는 요청도 같은 그래프에 붙어요. 직접 만들려면 <b>＋ 대블럭</b>으로 시작하세요.
             </div>
           ) : (
             <div
+              className={`plan-viewport ${vAnim && !panning ? "anim" : ""}`}
+              style={{ transform: `translate(${view.x}px, ${view.y}px) scale(${view.k})` }}
+            >
+            <div
+              key={focusKey}
               className="plan-graph"
               style={
                 { width: layout.width, height: layout.height, "--pcs": cardScale } as CSSProperties
@@ -315,14 +874,56 @@ export default function PlanView({
                     <path d="M0,0 L8,4 L0,8 z" className="plan-arrow-fill" />
                   </marker>
                 </defs>
-                {layout.edges.map((e) => (
-                  <path
-                    key={e.id}
-                    d={e.d}
-                    className={`plan-edge ${e.kind}`}
-                    markerEnd={e.kind === "dep" ? "url(#plan-arrow)" : undefined}
+                {layout.edges.map((e) =>
+                  e.kind === "dep" ? (
+                    // dep arc + a fat transparent hit-path so it can be clicked to remove
+                    <g key={e.id} className="plan-edge-dep-g">
+                      <path
+                        d={e.d}
+                        className={`plan-edge dep ${
+                          showCrit && crit?.edges.has(`${e.from}->${e.to}`) ? "crit" : ""
+                        }`}
+                        markerEnd="url(#plan-arrow)"
+                      />
+                      <path
+                        d={e.d}
+                        className="plan-edge-hit"
+                        onClick={() =>
+                          e.to &&
+                          e.from &&
+                          onSetStepDeps(e.to, (stepById[e.to]?.deps ?? []).filter((d) => d !== e.from))
+                        }
+                      >
+                        <title>클릭: 선행 연결 제거</title>
+                      </path>
+                    </g>
+                  ) : (
+                    <path key={e.id} d={e.d} className="plan-edge hier" />
+                  ),
+                )}
+                {/* live link being dragged from a step's handle */}
+                {link &&
+                  (() => {
+                    const src = layout.nodes.find((n) => n.id === link.from);
+                    if (!src) return null;
+                    return (
+                      <path
+                        className="plan-edge dep linking"
+                        markerEnd="url(#plan-arrow)"
+                        d={`M${src.x + src.w},${src.y + src.h / 2} L${link.x},${link.y}`}
+                      />
+                    );
+                  })()}
+                {/* marquee box-select rectangle */}
+                {marquee && (
+                  <rect
+                    className="plan-marquee"
+                    x={Math.min(marquee.x0, marquee.x1)}
+                    y={Math.min(marquee.y0, marquee.y1)}
+                    width={Math.abs(marquee.x1 - marquee.x0)}
+                    height={Math.abs(marquee.y1 - marquee.y0)}
                   />
-                ))}
+                )}
               </svg>
 
               {layout.nodes.map((n) => {
@@ -331,10 +932,27 @@ export default function PlanView({
                   if (!s) return null;
                   const st = stepState(s, effTs);
                   const wt = wtByStep[n.id];
-                  const cls = wt ? `wt-${wt.phase}` : st;
-                  const label = wt ? PHASE_LABEL[wt.phase] : STATE_LABEL[st];
-                  const liveTerm = wt?.resolveTermId ?? wt?.termId;
+                  const liveTerm = wt?.resolveTermId ?? wt?.termId ?? stepTerm[n.id];
+                  const liveTs = liveTerm ? statuses[liveTerm] : undefined;
+                  // base visual: worktree phase → board-run live status → plan state
+                  let cls: string;
+                  let label: string;
+                  if (wt) {
+                    cls = `wt-${wt.phase}`;
+                    label = PHASE_LABEL[wt.phase];
+                  } else if (st === "running") {
+                    cls = liveTs === "waiting" ? "waiting" : "running";
+                    label = liveTs === "waiting" ? "승인 필요" : "실행 중";
+                  } else {
+                    cls = st;
+                    label = STATE_LABEL[st];
+                  }
+                  const onCrit = showCrit && !!crit?.nodes.has(n.id);
+                  const isReady = st === "ready";
                   const on = sel.has(n.id);
+                  const dragging = drag?.stepId === n.id;
+                  const startedAt = startAt.current[n.id];
+                  const elapsed = startedAt ? fmtElapsed(nowTs - startedAt) : null;
                   // When running in a worktree, surface its branch + dir so the
                   // user can see exactly which worktree this step is using.
                   const tip = wt
@@ -345,13 +963,41 @@ export default function PlanView({
                   return (
                     <div
                       key={n.id}
-                      className={`plan-node step ${cls} ${on ? "sel" : ""}`}
+                      className={`plan-node step ${cls} ${on ? "sel" : ""} ${
+                        isReady ? "is-ready" : ""
+                      } ${onCrit ? "crit" : ""} ${dragging ? "dragging" : ""}`}
                       style={{ left: n.x, top: n.y, width: n.w, height: n.h }}
-                      onClick={() => toggleStep(n.id)}
+                      onClick={() => {
+                        if (suppressClick.current) {
+                          suppressClick.current = false;
+                          return;
+                        }
+                        toggleStep(n.id);
+                      }}
+                      onMouseUp={() => {
+                        const l = linkRef.current;
+                        if (l && l.from !== n.id) {
+                          const cur = stepById[n.id]?.deps ?? [];
+                          if (!cur.includes(l.from)) onSetStepDeps(n.id, [...cur, l.from]);
+                          suppressClick.current = true;
+                          setLink(null);
+                        }
+                      }}
                       onDoubleClick={() => setStepEdit(s)}
                     >
-                      <div className="plan-node-step-head">
+                      <div
+                        className="plan-node-step-head"
+                        title="드래그해서 다른 중블럭으로 이동"
+                        onMouseDown={(e) => {
+                          if (e.button !== 0 || spaceHeld.current) return; // left only; Space = pan
+                          e.preventDefault(); // stop native text-selection drag
+                          dragArm.current = { stepId: n.id, sx: e.clientX, sy: e.clientY };
+                        }}
+                      >
                         <span className="plan-node-title">{n.title}</span>
+                        {elapsed && (st === "running" || wt) && (
+                          <span className="plan-node-elapsed">{elapsed}</span>
+                        )}
                         <span className={`plan-node-state ${cls}`}>{label}</span>
                       </div>
                       {/* instruction (지시문) — edit inline; while a worktree run
@@ -375,14 +1021,25 @@ export default function PlanView({
                           }}
                         />
                       )}
+                      {/* drag this handle onto another step to make it a prerequisite */}
+                      <span
+                        className="plan-link-handle"
+                        title="드래그해서 다른 소블럭에 '선행'으로 연결"
+                        onMouseDown={(e) => {
+                          e.stopPropagation();
+                          e.preventDefault();
+                          const w = toWorld(e.clientX, e.clientY);
+                          setLink({ from: n.id, x: w.x, y: w.y });
+                        }}
+                      />
                       <span className="plan-node-actions">
                         {liveTerm && (
                           <button
                             className="plan-node-act"
-                            title="이 단계 세션 보기"
+                            title="이 소블럭 세션으로 이동"
                             onClick={(e) => {
                               e.stopPropagation();
-                              onShowStep(liveTerm);
+                              onJumpToStep(liveTerm);
                             }}
                           >
                             👁
@@ -421,7 +1078,9 @@ export default function PlanView({
                 return (
                   <div
                     key={n.id}
-                    className={`plan-node ${n.kind} ${allDone ? "done" : ""} ${allSel ? "sel" : ""}`}
+                    className={`plan-node ${n.kind} ${allDone ? "done" : ""} ${allSel ? "sel" : ""} ${
+                      dropFeat === n.id ? "drop-ok" : ""
+                    }`}
                     style={{ left: n.x, top: n.y, width: n.w, height: n.h }}
                   >
                     <button
@@ -445,7 +1104,7 @@ export default function PlanView({
                     <span
                       className="plan-node-count clickable"
                       onClick={() => toggleGroup(ids)}
-                      title="클릭: 하위 단계 전체 선택/해제"
+                      title="클릭: 하위 소블럭 전체 선택/해제"
                     >
                       {allDone ? "✓ " : ""}
                       {d}/{ids.length}
@@ -453,7 +1112,7 @@ export default function PlanView({
                     <span className="plan-node-actions">
                       <button
                         className="plan-node-act"
-                        title={n.kind === "theme" ? "기능 추가" : "단계 추가"}
+                        title={n.kind === "theme" ? "중블럭 추가" : "소블럭 추가"}
                         onClick={(e) => {
                           e.stopPropagation();
                           n.kind === "theme" ? onAddFeature(n.id) : onAddStep(n.id);
@@ -475,22 +1134,75 @@ export default function PlanView({
                   </div>
                 );
               })}
+
+              {/* drag-to-reparent ghost following the cursor (world coords) */}
+              {drag && (
+                <div className="plan-drag-ghost" style={{ left: drag.x + 10, top: drag.y + 8 }}>
+                  {stepById[drag.stepId]?.title ?? "소블럭"}
+                  <span className="plan-drag-ghost-hint">
+                    {dropFeat ? "여기 중블럭으로 이동" : "중블럭 위에 놓기"}
+                  </span>
+                </div>
+              )}
+            </div>
             </div>
           )}
+
+          {/* one-line help so the canvas interactions are discoverable */}
+          {hasGraph && layout && (
+            <div className="plan-hint">
+              우클릭(또는 Space)드래그 이동 · 휠 확대/축소(F 맞춤) · 빈 곳 드래그로 박스 선택 · 소블럭
+              우측 점을 끌어 선행 연결 · 점선 클릭 해제
+            </div>
+          )}
+
+          {/* Zoom / fit controls (floating, bottom-right) */}
+          {hasGraph && layout && (
+            <div className="plan-zoom" onMouseDown={(e) => e.stopPropagation()}>
+              <button className="plan-zoom-btn" title="축소" onClick={() => zoomBy(1 / 1.2)}>
+                －
+              </button>
+              <button
+                className="plan-zoom-val"
+                title="100%로"
+                onClick={() => setView((v) => ({ ...v, k: 1 }))}
+              >
+                {Math.round(view.k * 100)}%
+              </button>
+              <button className="plan-zoom-btn" title="확대" onClick={() => zoomBy(1.2)}>
+                ＋
+              </button>
+              <button className="plan-zoom-btn fit" title="화면에 맞춤" onClick={fitView}>
+                ⤢
+              </button>
+            </div>
+          )}
+        </div>
         </div>
 
         {/* Selection action bar */}
         {hasGraph && total > 0 && (
           <footer className="plan-foot">
-            <span className="plan-selinfo">{sel.size}개 단계 선택</span>
+            <span className="plan-selinfo">
+              {sel.size}개 소블럭 선택
+              {readyIds.length > 0 && <span className="plan-readytag">실행 가능 {readyIds.length}</span>}
+            </span>
             <div className="plan-foot-actions">
+              <button
+                className="btn"
+                disabled={!readyIds.length}
+                onClick={() => setSel(new Set(readyIds))}
+                title="선행이 모두 끝나 지금 바로 돌릴 수 있는 소블럭만 선택"
+              >
+                지금 실행 가능 ({readyIds.length})
+              </button>
               <button
                 className="btn"
                 onClick={() =>
                   setSel(new Set(plan!.steps.filter((s) => effTs[s.id] !== "done").map((s) => s.id)))
                 }
               >
-                남은 단계 전체
+                남은 소블럭 전체
               </button>
               <button className="btn" onClick={() => setSel(new Set())} disabled={!sel.size}>
                 선택 해제
@@ -534,6 +1246,67 @@ export default function PlanView({
   );
 }
 
+/** Header popover to pick the graph's flow direction + sibling order (persisted). */
+function LayoutMenu({
+  dir,
+  sort,
+  onSetDir,
+  onSetSort,
+}: {
+  dir: PlanDir;
+  sort: PlanSort;
+  onSetDir: (dir: PlanDir) => void;
+  onSetSort: (sort: PlanSort) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const DIRS: { k: PlanDir; icon: string; label: string }[] = [
+    { k: "LR", icon: "→", label: "가로" },
+    { k: "RL", icon: "←", label: "가로(역)" },
+    { k: "TB", icon: "↓", label: "세로" },
+    { k: "BT", icon: "↑", label: "세로(역)" },
+    { k: "H2", icon: "⇄", label: "양쪽 가로" },
+    { k: "V2", icon: "⇅", label: "양쪽 세로" },
+    { k: "RAD", icon: "✳", label: "방사형" },
+    { k: "GRID", icon: "▦", label: "격자" },
+  ];
+  return (
+    <div className="plan-layoutmenu" onMouseDown={(e) => e.stopPropagation()}>
+      <button className="btn" onClick={() => setOpen((o) => !o)} title="레이아웃 방향·정렬 (저장됨)">
+        ⊞ 보기
+      </button>
+      {open && (
+        <>
+          <div className="plan-menu-backdrop" onClick={() => setOpen(false)} />
+          <div className="plan-menu">
+            <div className="plan-menu-label">펼치는 방향</div>
+            <div className="plan-menu-dirs">
+              {DIRS.map((d) => (
+                <button
+                  key={d.k}
+                  className={`plan-menu-dir ${dir === d.k ? "on" : ""}`}
+                  onClick={() => onSetDir(d.k)}
+                >
+                  <span className="plan-menu-icon">{d.icon}</span>
+                  {d.label}
+                </button>
+              ))}
+            </div>
+            <div className="plan-menu-label">정렬 기준</div>
+            <select
+              className="plan-menu-sel"
+              value={sort}
+              onChange={(e) => onSetSort(e.target.value as PlanSort)}
+            >
+              <option value="added">추가순</option>
+              <option value="title">이름순 (가나다)</option>
+            </select>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 /** Edit a step's instruction (prompt). The graph node's title is derived from the
  *  instruction's first line — one field to edit instead of a title/prompt pair. */
 function StepEditor({
@@ -554,14 +1327,14 @@ function StepEditor({
   return (
     <div className="plan-rd-overlay" onMouseDown={onClose}>
       <div className="plan-se" onMouseDown={(e) => e.stopPropagation()}>
-        <div className="plan-rd-head">단계 편집</div>
+        <div className="plan-rd-head">소블럭 편집</div>
         <label className="plan-se-label">지시문 (세션에 전달될 prompt)</label>
         <textarea
           className="plan-se-prompt"
           autoFocus
           value={prompt}
           onChange={(e) => setPrompt(e.target.value)}
-          placeholder="이 단계를 수행할 세션에게 줄 지시문"
+          placeholder="이 소블럭을 수행할 세션에게 줄 지시문"
         />
         <div className="plan-rd-actions">
           <button className="btn" onClick={onClose}>
@@ -636,7 +1409,7 @@ function RunDialog({
     <div className="plan-rd-overlay" onMouseDown={onClose}>
       <div className="plan-rd" onMouseDown={(e) => e.stopPropagation()}>
         <div className="plan-rd-head">
-          <span className="plan-rd-count">{steps.length}</span> 개 단계 실행
+          <span className="plan-rd-count">{steps.length}</span> 개 소블럭 실행
         </div>
 
         {/* worktree mode — recommended for plans */}
@@ -663,7 +1436,7 @@ function RunDialog({
                 "git 저장소 확인 중…"
               ) : (
                 <>
-                  단계마다 자체 worktree에서 실행 → 커밋·통합 브랜치 병합 →{" "}
+                  소블럭마다 자체 worktree에서 실행 → 커밋·통합 브랜치 병합 →{" "}
                   <b>완료되면 현재 브랜치로 자동 병합</b>. 충돌은 Claude가 해결.
                 </>
               )}
@@ -717,7 +1490,7 @@ function RunDialog({
               disabled={worktree}
               onChange={(e) => setPerStep(e.target.checked)}
             />
-            단계별로 개별 지정
+            소블럭별로 개별 지정
           </label>
           {!worktree && perStep && (
             <div className="plan-rd-list">

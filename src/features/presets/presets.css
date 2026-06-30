@@ -1,0 +1,195 @@
+/* --- presets manage + run panel (right drawer) --- */
+.preset-row {
+  align-items: center;
+  gap: 4px;
+  padding: 4px 6px 4px 4px;
+}
+/* the clickable run surface fills the row; ✎/✕ sit beside it */
+.preset-run {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: none;
+  border: none;
+  color: var(--text);
+  text-align: left;
+  padding: 5px 6px;
+  border-radius: 7px;
+  transition: background var(--dur-fast) var(--ease-out);
+}
+.preset-run:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+.preset-run:active {
+  transform: scale(0.97);
+}
+/* a brief pulse confirming the click landed (run is fire-and-forget) */
+.preset-run.flash {
+  animation: preset-flash 420ms var(--ease-out);
+}
+@keyframes preset-flash {
+  0% {
+    background: rgba(167, 139, 250, 0.32);
+  }
+  100% {
+    background: rgba(255, 255, 255, 0.05);
+  }
+}
+.preset-play {
+  flex-shrink: 0;
+  font-size: 10px;
+  color: var(--muted);
+  opacity: 0;
+  transition: opacity var(--dur-fast) var(--ease-out);
+}
+.preset-run:hover .preset-play {
+  opacity: 1;
+}
+.preset-row.on {
+  border-color: var(--accent);
+}
+.preset-tag {
+  flex-shrink: 0;
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 600;
+  padding: 2px 6px;
+  border-radius: 5px;
+  margin-right: 6px;
+}
+.preset-tag.code {
+  color: var(--green);
+  background: rgba(74, 222, 128, 0.14);
+}
+.preset-tag.ai {
+  color: var(--accent);
+  background: rgba(167, 139, 250, 0.16);
+}
+.preset-kind-toggle {
+  display: flex;
+  gap: 6px;
+}
+.preset-kind-toggle button {
+  flex: 1;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  color: var(--muted);
+  border-radius: 7px;
+  padding: 6px;
+  font-size: 12px;
+  transition: all var(--dur-fast) var(--ease-out);
+}
+.preset-kind-toggle button.on {
+  color: var(--text);
+  border-color: var(--accent);
+  background: rgba(167, 139, 250, 0.12);
+}
+/* mode toggle: 직접 추가 / AI 생성 */
+.preset-mode-toggle {
+  display: flex;
+  gap: 6px;
+  margin-top: 10px;
+}
+.preset-mode-toggle button {
+  flex: 1;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  color: var(--muted);
+  border-radius: 7px;
+  padding: 6px;
+  font-size: 12px;
+  transition: all var(--dur-fast) var(--ease-out);
+}
+.preset-mode-toggle button.on {
+  color: var(--text);
+  border-color: var(--accent);
+  background: rgba(167, 139, 250, 0.12);
+}
+.preset-field-label {
+  font-size: 11px;
+  color: var(--muted);
+  margin-top: 2px;
+}
+/* "이 프로젝트 전용" badge on overridden presets */
+.preset-badge {
+  margin-left: 6px;
+  font-size: 9.5px;
+  font-weight: 600;
+  color: var(--accent);
+  background: rgba(167, 139, 250, 0.14);
+  border-radius: 5px;
+  padding: 1px 5px;
+  vertical-align: middle;
+}
+.preset-form-actions {
+  display: flex;
+  gap: 6px;
+}
+.preset-form-actions .add {
+  flex: 1;
+}
+.preset-form-actions .ghost {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  color: var(--muted);
+  border-radius: 7px;
+  padding: 7px 12px;
+  font-size: 13px;
+}
+.form .add:disabled {
+  opacity: 0.45;
+}
+
+/* --- transient toasts (bottom-right) --- */
+.toast-wrap {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  z-index: 300;
+  pointer-events: none;
+}
+.toast {
+  pointer-events: auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 200px;
+  max-width: 380px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--muted);
+  border-radius: 9px;
+  padding: 9px 12px;
+  font-size: 12.5px;
+  color: var(--text);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+  animation: fleet-pop-in var(--dur) var(--ease-out);
+}
+.toast.ok {
+  border-left-color: var(--green);
+}
+.toast.err {
+  border-left-color: #f87171;
+}
+.toast.info {
+  border-left-color: var(--accent);
+}
+.toast-text {
+  flex: 1;
+  word-break: break-word;
+}
+.toast-x {
+  background: none;
+  border: none;
+  color: var(--muted);
+  font-size: 12px;
+  flex-shrink: 0;
+}
+.toast-x:hover {
+  color: var(--text);
+}

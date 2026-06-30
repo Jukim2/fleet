@@ -15,6 +15,7 @@ mod bridge;
 mod cdp;
 mod config;
 mod diagnostics;
+mod exec;
 mod git;
 mod pty;
 mod sessions;
@@ -58,12 +59,15 @@ pub fn run() {
             config::save_config,
             config::read_plan,
             config::clear_plan,
+            config::read_preset,
+            config::clear_preset,
             bridge::ensure_hook_installed,
             bridge::prepare_claude_auto,
             bridge::web_enqueue,
             diagnostics::app_diagnostics,
             diagnostics::path_exists,
             diagnostics::open_path,
+            exec::run_command,
             webtabs::open_web_tab,
             webtabs::web_eval,
             webtabs::close_web_tab,
