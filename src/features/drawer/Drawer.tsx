@@ -1,35 +1,34 @@
-import { Preset, PresetOverride } from "../../types";
+import { Preset, PresetBody } from "../../types";
 import PresetsPanel from "../presets/PresetsPanel";
 import "./drawer.css";
 
 export default function Drawer({
   open,
   onClose,
-  projectName,
   presets,
-  overrides,
+  bodies,
   presetGen,
   onRun,
-  onSetPresets,
-  onSetOverride,
-  onAiCreate,
-  onRefill,
+  onAddPreset,
+  onUpdatePreset,
+  onRemovePreset,
+  onSetBody,
+  onGenerate,
 }: {
   open: boolean;
   onClose: () => void;
-  projectName?: string;
   presets: Preset[];
-  overrides: Record<string, PresetOverride>;
+  bodies: Record<string, PresetBody>;
   presetGen: Record<string, boolean>;
   onRun: (presetId: string) => void;
-  onSetPresets: (p: Preset[]) => void;
-  onSetOverride: (presetId: string, ov: PresetOverride | null) => void;
-  onAiCreate: (name: string, kind: Preset["kind"], description: string) => void;
-  onRefill: (presetId: string) => void;
+  onAddPreset: (name: string, kind: Preset["kind"], description: string, body?: string) => void;
+  onUpdatePreset: (presetId: string, patch: Partial<Omit<Preset, "id">>) => void;
+  onRemovePreset: (presetId: string) => void;
+  onSetBody: (presetId: string, body: PresetBody | null) => void;
+  onGenerate: (presetId: string) => void;
 }) {
-  if (!open) return null;
   return (
-    <aside className="drawer">
+    <aside className="drawer" aria-hidden={!open}>
       <div className="drawer-tabs">
         <button className="on">프리셋</button>
         <button className="drawer-x" onClick={onClose} title="닫기">
@@ -39,15 +38,15 @@ export default function Drawer({
 
       <div className="drawer-body">
         <PresetsPanel
-          projectName={projectName}
           presets={presets}
-          overrides={overrides}
+          bodies={bodies}
           presetGen={presetGen}
           onRun={onRun}
-          onSetPresets={onSetPresets}
-          onSetOverride={onSetOverride}
-          onAiCreate={onAiCreate}
-          onRefill={onRefill}
+          onAddPreset={onAddPreset}
+          onUpdatePreset={onUpdatePreset}
+          onRemovePreset={onRemovePreset}
+          onSetBody={onSetBody}
+          onGenerate={onGenerate}
         />
       </div>
     </aside>

@@ -1,23 +1,15 @@
-// Pure helpers for global presets + per-project overrides.
-import { Preset, PresetOverride } from "../types";
+// Pure helpers for global presets + their per-project bodies.
+import { Preset, PresetBody } from "../types";
 
-/** The body (command for code, prompt for ai) a preset runs with, after applying
- *  a project's override. Override wins when it has a non-empty value. */
-export function effectiveBody(p: Preset, ov?: PresetOverride): string {
-  if (p.kind === "code") return (ov?.command?.trim() ? ov.command : p.command) ?? "";
-  return (ov?.prompt?.trim() ? ov.prompt : p.prompt) ?? "";
+/** The string this preset runs with in a given project: the project's `command`
+ *  (code) or `prompt` (ai). Empty string when the project hasn't created a body
+ *  for this preset yet. */
+export function presetBody(p: Preset, body?: PresetBody): string {
+  const v = p.kind === "code" ? body?.command : body?.prompt;
+  return v?.trim() ? v : "";
 }
 
-/** A preset with its per-project override folded into command/prompt, ready to
- *  run or display for that project. */
-export function resolvePreset(p: Preset, ov?: PresetOverride): Preset {
-  const body = effectiveBody(p, ov);
-  return p.kind === "code" ? { ...p, command: body } : { ...p, prompt: body };
-}
-
-/** True when this project has an override that actually changes the body. */
-export function isOverridden(p: Preset, ov?: PresetOverride): boolean {
-  if (!ov) return false;
-  const v = p.kind === "code" ? ov.command : ov.prompt;
-  return !!v?.trim();
+/** True when this project has created a non-empty body for the preset. */
+export function hasBody(p: Preset, body?: PresetBody): boolean {
+  return presetBody(p, body).trim() !== "";
 }

@@ -40,6 +40,24 @@ struct HookEvent {
     /// surface a worktree step's session in the project's resume list afterward.
     session_id: String,
     transcript_path: String,
+    /// PreToolUse only: the tool about to run + a short detail (file path,
+    /// command, …), so Fleet can show "what is this session doing right now".
+    tool_name: String,
+    tool_detail: String,
+}
+
+/// Pull a short human hint out of a tool_input blob (first field that reads well),
+/// so the UI can show e.g. the file being edited or the command being run.
+fn tool_detail(input: &serde_json::Value) -> String {
+    for key in ["file_path", "command", "pattern", "description", "url", "path", "query", "prompt"] {
+        if let Some(s) = input.get(key).and_then(|v| v.as_str()) {
+            let s = s.trim();
+            if !s.is_empty() {
+                return s.chars().take(140).collect();
+            }
+        }
+    }
+    String::new()
 }
 
 #[derive(Clone, Serialize)]
@@ -164,19 +182,29 @@ fn handle_hook_conn(mut stream: std::net::TcpStream, app: &AppHandle) {
     if term_id.is_empty() {
         return; // not a Fleet-spawned session
     }
-    let (event, notification_type, session_id, transcript_path) =
+    let (event, notification_type, session_id, transcript_path, tool_name, tool_detail) =
         match serde_json::from_slice::<serde_json::Value>(&body) {
             Ok(v) => (
                 v.get("hook_event_name").and_then(|x| x.as_str()).unwrap_or("").to_string(),
                 v.get("notification_type").and_then(|x| x.as_str()).unwrap_or("").to_string(),
                 v.get("session_id").and_then(|x| x.as_str()).unwrap_or("").to_string(),
                 v.get("transcript_path").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+                v.get("tool_name").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+                v.get("tool_input").map(tool_detail).unwrap_or_default(),
             ),
-            Err(_) => (String::new(), String::new(), String::new(), String::new()),
+            Err(_) => Default::default(),
         };
     let _ = app.emit(
         "hook-event",
-        HookEvent { term_id, event, notification_type, session_id, transcript_path },
+        HookEvent {
+            term_id,
+            event,
+            notification_type,
+            session_id,
+            transcript_path,
+            tool_name,
+            tool_detail,
+        },
     );
 }
 
@@ -244,6 +272,8 @@ pub fn ensure_hook_installed() -> Result<(), String> {
 
     install(hooks, "Stop", vec![group(None)]);
     install(hooks, "UserPromptSubmit", vec![group(None)]);
+    // PreToolUse drives the live "what is this session doing" activity line.
+    install(hooks, "PreToolUse", vec![group(None)]);
     install(
         hooks,
         "Notification",

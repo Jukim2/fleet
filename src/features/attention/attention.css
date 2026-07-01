@@ -1,0 +1,144 @@
+/* ⌘J attention peek — cross-project session triage overlay */
+.peek-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 260;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 12vh;
+  background: rgba(0, 0, 0, 0.42);
+  animation: fleet-fade-in var(--dur-fast) var(--ease-out);
+}
+.peek {
+  width: min(560px, 92vw);
+  max-height: 70vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.55);
+  overflow: hidden;
+  animation: fleet-pop-in var(--dur) var(--ease-out);
+}
+.peek-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 14px 0;
+}
+.peek-title {
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: var(--text);
+}
+.peek-badge {
+  font-size: 10.5px;
+  font-weight: 700;
+  color: #f5b544;
+  background: rgba(245, 181, 68, 0.15);
+  border-radius: 6px;
+  padding: 2px 7px;
+}
+.peek-input {
+  margin: 10px 14px 8px;
+  background: rgba(0, 0, 0, 0.25);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  padding: 9px 12px;
+  color: var(--text);
+  font-size: 13px;
+  outline: none;
+}
+.peek-input:focus {
+  border-color: var(--accent);
+}
+.peek-list {
+  overflow-y: auto;
+  padding: 4px 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.peek-empty {
+  padding: 20px 8px;
+  text-align: center;
+  color: var(--muted);
+  font-size: 12.5px;
+}
+.peek-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 10px;
+  border-radius: 9px;
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease-out);
+}
+.peek-item.sel {
+  background: rgba(167, 139, 250, 0.14);
+}
+.peek-status {
+  flex-shrink: 0;
+  width: 64px;
+  text-align: center;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 3px 0;
+  border-radius: 6px;
+  color: var(--muted);
+  background: rgba(255, 255, 255, 0.06);
+}
+.peek-status.waiting {
+  color: #f5b544;
+  background: rgba(245, 181, 68, 0.16);
+}
+.peek-status.idle {
+  color: var(--green);
+  background: rgba(74, 222, 128, 0.14);
+}
+.peek-status.busy {
+  color: var(--accent);
+  background: rgba(167, 139, 250, 0.16);
+}
+.peek-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.peek-where {
+  font-size: 13px;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.peek-where b {
+  font-weight: 600;
+}
+.peek-sep {
+  color: var(--muted);
+  margin: 0 5px;
+}
+.peek-activity {
+  font-size: 11px;
+  color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.peek-go {
+  flex-shrink: 0;
+  color: var(--muted);
+  opacity: 0;
+  transition: opacity var(--dur-fast) var(--ease-out);
+}
+.peek-item.sel .peek-go {
+  opacity: 1;
+  color: var(--accent);
+}

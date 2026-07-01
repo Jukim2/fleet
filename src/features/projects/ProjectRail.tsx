@@ -27,6 +27,7 @@ export default function ProjectRail({
   activeId,
   liveByProject,
   projectStatus,
+  waitingByProject,
   sessions,
   sessionsLoading,
   onSelect,
@@ -38,6 +39,7 @@ export default function ProjectRail({
   onDeleteSession,
   openSessionTerm,
   onOpenSettings,
+  onOpenOverview,
   onCollapse,
 }: {
   projects: Project[];
@@ -45,6 +47,8 @@ export default function ProjectRail({
   liveByProject: Record<string, number>;
   /** projectId → most attention-worthy live status (waiting > busy > idle) */
   projectStatus: Record<string, "busy" | "idle" | "waiting" | "stopped">;
+  /** projectId → number of sessions blocked on a permission prompt */
+  waitingByProject: Record<string, number>;
   sessions: ClaudeSession[] | null;
   sessionsLoading: boolean;
   onSelect: (id: string) => void;
@@ -57,6 +61,7 @@ export default function ProjectRail({
   /** resume-session id → open terminal id, for the "이미 열림" marker */
   openSessionTerm: Record<string, string>;
   onOpenSettings: () => void;
+  onOpenOverview: () => void;
   onCollapse: () => void;
 }) {
   const [query, setQuery] = useState("");
@@ -71,6 +76,9 @@ export default function ProjectRail({
       <div className="rail-head">
         <span>Fleet</span>
         <div className="rail-head-btns">
+          <button className="icon-btn" title="전체 현황 (⌘⇧J)" onClick={onOpenOverview}>
+            ▦
+          </button>
           <button className="icon-btn" title="설정 · 진단" onClick={onOpenSettings}>
             ⚙
           </button>
@@ -99,6 +107,11 @@ export default function ProjectRail({
             <span className="rail-name" title={p.path}>
               {p.name}
             </span>
+            {waitingByProject[p.id] > 0 && (
+              <span className="rail-waiting" title={`승인 대기 ${waitingByProject[p.id]}`}>
+                {waitingByProject[p.id]}
+              </span>
+            )}
             {liveByProject[p.id] > 0 && (
               <span
                 className={`rail-dot ${projectStatus[p.id] ?? "idle"}`}

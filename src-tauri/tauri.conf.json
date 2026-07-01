@@ -15,7 +15,8 @@
         "title": "Fleet",
         "width": 1280,
         "height": 840,
-        "dragDropEnabled": false
+        "dragDropEnabled": false,
+        "backgroundColor": "#0e0e11"
       }
     ],
     "security": {

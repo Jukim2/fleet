@@ -1,18 +1,18 @@
 import { useState } from "react";
-import { Preset, PresetOverride } from "../../types";
-import { effectiveBody } from "../../lib/presets";
+import { Preset, PresetBody } from "../../types";
+import { presetBody } from "../../lib/presets";
 import "./presets.css";
 
-/** Horizontal row of one-click preset buttons. Presets are global; `overrides`
- *  tunes the body shown/run for the current project. */
+/** Horizontal row of one-click preset buttons. Presets are global; `bodies`
+ *  holds the current project's executable body per preset. */
 export default function PresetBar({
   presets,
-  overrides,
+  bodies,
   onRun,
   onManage,
 }: {
   presets: Preset[];
-  overrides: Record<string, PresetOverride>;
+  bodies: Record<string, PresetBody>;
   onRun: (presetId: string) => void;
   onManage: () => void;
 }) {
@@ -38,7 +38,7 @@ export default function PresetBar({
                 onClick={() => run(p.id)}
                 title={
                   p.kind === "code"
-                    ? `코드 · ${effectiveBody(p, overrides[p.id])}`
+                    ? `코드 · ${presetBody(p, bodies[p.id]) || "(미생성)"}`
                     : `AI · 현재 터미널로 전송`
                 }
               >

@@ -143,18 +143,29 @@ export default function Terminal({
       onStatus?.(id, "stopped");
     });
 
+    // Debounce refit/PTY-resize: while a side panel slides open the host resizes
+    // every frame, and firing resizePty per frame makes Claude's TUI clear-and-
+    // repaint each time (the flicker). Coalesce into one fit once resizing settles.
+    // .term-float is overflow:hidden, so mid-animation the terminal just clips/
+    // gaps against the matching dark bg instead of reflowing.
+    let rzTimer: number | undefined;
     const ro = new ResizeObserver(() => {
-      try {
-        fit.fit();
-        resizePty(id, term.cols, term.rows);
-      } catch {
-        /* hidden */
-      }
+      if (rzTimer) window.clearTimeout(rzTimer);
+      rzTimer = window.setTimeout(() => {
+        rzTimer = undefined;
+        try {
+          fit.fit();
+          resizePty(id, term.cols, term.rows);
+        } catch {
+          /* hidden */
+        }
+      }, 90);
     });
     ro.observe(hostRef.current!);
 
     return () => {
       if (scanTimer.current) window.clearTimeout(scanTimer.current);
+      if (rzTimer) window.clearTimeout(rzTimer);
       detachInput();
       unlistenOut.then((f) => f());
       unlistenExit.then((f) => f());

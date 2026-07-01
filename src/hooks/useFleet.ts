@@ -16,10 +16,11 @@ import {
 import { loadConfig, saveConfig } from "../api/config";
 import { runCommand } from "../api/exec";
 import { closeWebTab, openWebTab, webEval } from "../api/web";
-import { cdpEval, cdpOpen, cdpTargets } from "../api/cdp";
+import { openPath } from "../api/system";
 import { clearPlan, plannerPrompt, readPlan } from "../api/planner";
 import { clearPreset, presetGenPrompt, readPreset, GeneratedPreset } from "../api/presetgen";
-import { resolvePreset } from "../lib/presets";
+import { presetBody } from "../lib/presets";
+import { describeActivity } from "../lib/activity";
 import {
   gitIsRepo,
   wtAdd,
@@ -32,7 +33,7 @@ import {
   wtFinalize,
 } from "../api/git";
 import { buildWtRun, WtFix, WtLogEntry, WtRun } from "../lib/worktree";
-import { buildInjectJs, embedBlocked, isKnownChatSite } from "../lib/webAdapters";
+import { buildInjectJs } from "../lib/webAdapters";
 import { laneLiveTerm } from "../lib/board";
 import {
   parsePlanDelta,
@@ -67,7 +68,7 @@ import {
   PlanSort,
   PlanViewport,
   Preset,
-  PresetOverride,
+  PresetBody,
   QueueBoard,
   QueueTask,
   Toast,
@@ -75,6 +76,7 @@ import {
   Terminal,
   TermStatus,
   WebTab,
+  WebArtifact,
   emptyConfig,
 } from "../types";
 import { useClaudeSessions } from "./useClaudeSessions";
@@ -150,53 +152,69 @@ function migrateBoards(c: FleetConfig): Record<string, QueueBoard> {
 }
 
 /**
- * Presets as persisted, upgrading the pre-global shape: `presets` used to be a
- * `Record<projectId, Preset[]>`. We flatten it into one global list (deduped by
- * kind+name; the first project's body becomes the default) and turn any project
- * whose body differs into a per-project override. Also strips the old `icon`.
+ * Presets as persisted, upgrading older shapes into the current model: a global
+ * preset is just `{id, name, kind, desc}` and every project carries its OWN body
+ * in `presetBodies`. Two upgrades are handled:
+ *  - The previous "global default body + per-project override" shape: the old
+ *    global `command`/`prompt` is seeded into every existing project's body (so
+ *    presets keep running), and `presetOverrides` becomes `presetBodies`.
+ *  - The oldest `Record<projectId, Preset[]>` shape: flattened to one global list
+ *    (deduped by kind+name), with each project's body preserved per-project.
  */
 function migratePresets(c: FleetConfig): {
   presets: Preset[];
-  presetOverrides: Record<string, Record<string, PresetOverride>>;
+  presetBodies: Record<string, Record<string, PresetBody>>;
 } {
-  // Already migrated: global array + (maybe) overrides.
-  if (Array.isArray(c.presets))
-    return {
-      presets: c.presets.map((p) => ({
-        id: p.id,
-        name: p.name,
-        kind: p.kind,
-        command: p.command,
-        prompt: p.prompt,
-        desc: p.desc,
-      })),
-      presetOverrides: c.presetOverrides ?? {},
-    };
+  const projectIds = (c.projects ?? []).map((p) => p.id);
+  const asBody = (kind: Preset["kind"], v: string): PresetBody =>
+    kind === "code" ? { command: v } : { prompt: v };
 
+  // Global-array shape (old default-body form, or already current). Fold any
+  // old global body into each project's body and ensure `desc`.
+  if (Array.isArray(c.presets)) {
+    const legacyMap =
+      (c as unknown as { presetBodies?: Record<string, Record<string, PresetBody>> }).presetBodies ??
+      (c as unknown as { presetOverrides?: Record<string, Record<string, PresetBody>> })
+        .presetOverrides ??
+      {};
+    const presetBodies: Record<string, Record<string, PresetBody>> = {};
+    for (const [pid, m] of Object.entries(legacyMap)) presetBodies[pid] = { ...m };
+
+    const presets: Preset[] = c.presets.map((raw) => {
+      const p = raw as unknown as Preset & { command?: string; prompt?: string };
+      const globalBody = (p.kind === "code" ? p.command : p.prompt)?.trim();
+      if (globalBody)
+        for (const pid of projectIds) {
+          const forProject = (presetBodies[pid] ??= {});
+          if (!forProject[p.id]) forProject[p.id] = asBody(p.kind, globalBody);
+        }
+      return { id: p.id, name: p.name, kind: p.kind, desc: (p.desc ?? p.name ?? "").trim() };
+    });
+    return { presets, presetBodies };
+  }
+
+  // Oldest shape: Record<projectId, Preset[]>.
   const legacy = c.presets as unknown as Record<string, Preset[]> | undefined;
   const presets: Preset[] = [];
-  const presetOverrides: Record<string, Record<string, PresetOverride>> = {};
-  if (!legacy) return { presets, presetOverrides };
+  const presetBodies: Record<string, Record<string, PresetBody>> = {};
+  if (!legacy) return { presets, presetBodies };
 
   const byKey = new Map<string, Preset>();
-  const bodyOf = (p: Preset) => (p.kind === "code" ? p.command : p.prompt) ?? "";
   for (const [projectId, list] of Object.entries(legacy)) {
-    for (const p of list ?? []) {
+    for (const raw of list ?? []) {
+      const p = raw as unknown as Preset & { command?: string; prompt?: string };
+      const body = (p.kind === "code" ? p.command : p.prompt)?.trim() ?? "";
       const key = `${p.kind}\n${p.name.trim().toLowerCase()}`;
       let global = byKey.get(key);
       if (!global) {
-        global = { id: uid(), name: p.name, kind: p.kind, command: p.command, prompt: p.prompt };
+        global = { id: uid(), name: p.name, kind: p.kind, desc: (p.desc ?? p.name).trim() };
         byKey.set(key, global);
         presets.push(global);
-        continue; // first occurrence defines the default — no override needed
       }
-      if (bodyOf(p) && bodyOf(p) !== bodyOf(global)) {
-        const ov: PresetOverride = p.kind === "code" ? { command: p.command } : { prompt: p.prompt };
-        (presetOverrides[projectId] ??= {})[global.id] = ov;
-      }
+      if (body) (presetBodies[projectId] ??= {})[global.id] = asBody(p.kind, body);
     }
   }
-  return { presets, presetOverrides };
+  return { presets, presetBodies };
 }
 
 /** Central store: owns config + per-session UI state and every mutation. */
@@ -214,6 +232,10 @@ export function useFleet() {
   const [presetGen, setPresetGen] = useState<Record<string, boolean>>({});
   /** transient corner toasts (e.g. preset run results), auto-dismissed */
   const [toasts, setToasts] = useState<Toast[]>([]);
+  /** files harvested from web tabs (GPT images, etc.) — non-persisted */
+  const [artifacts, setArtifacts] = useState<WebArtifact[]>([]);
+  /** live "what is this session doing" line per terminal (from PreToolUse) */
+  const [activity, setActivity] = useState<Record<string, string>>({});
   const genTimer = useRef<number | null>(null);
   const loaded = useRef(false);
 
@@ -329,10 +351,10 @@ export function useFleet() {
         if (lay) focus[p.id] = firstLeaf(lay).id;
       }
       const boards = migrateBoards(c);
-      const { presets, presetOverrides } = migratePresets(c);
+      const { presets, presetBodies } = migratePresets(c);
       const plans: Record<string, Plan> = {};
       for (const [pid, p] of Object.entries(c.plans ?? {})) plans[pid] = normalizePlan(p);
-      setConfig({ ...c, layouts, boards, presets, presetOverrides, plans });
+      setConfig({ ...c, layouts, boards, presets, presetBodies, plans });
       setFocusedPane(focus);
       const first = c.projects[0]?.id ?? null;
       setActiveProjectId(first);
@@ -411,6 +433,9 @@ export function useFleet() {
     return ls.find((l) => l.id === paneId)?.termId ?? null;
   }, [activeProjectId, config.layouts, focusedPane]);
   const focusedTerm = config.terminals.find((t) => t.id === focusedTermId) ?? null;
+  // Fresh focus for the stable hook listener (which closes over first-render vals).
+  const focusedRef = useRef<string | null>(null);
+  focusedRef.current = focusedTermId;
 
   // --- projects ---
   const selectProject = (id: string) => {
@@ -626,46 +651,75 @@ export function useFleet() {
   };
 
   // --- toasts (transient corner notifications) ---
-  const pushToast = (kind: Toast["kind"], text: string) => {
+  const pushToast = (kind: Toast["kind"], text: string, action?: Toast["action"]) => {
     const id = uid();
-    setToasts((ts) => [...ts, { id, kind, text }]);
+    setToasts((ts) => [...ts, { id, kind, text, action }]);
     window.setTimeout(
       () => setToasts((ts) => ts.filter((t) => t.id !== id)),
-      kind === "err" ? 6000 : 3200,
+      // actionable pings linger a bit so you can actually click them
+      kind === "err" ? 6000 : action ? 7000 : 3200,
     );
   };
   const dismissToast = (id: string) => setToasts((ts) => ts.filter((t) => t.id !== id));
 
-  // --- presets (global one-click actions + per-project behavior overrides) ---
+  // --- presets (global name/kind/desc + a per-project AI-generated body) ------
 
   /** Replace the global preset list. */
   const setGlobalPresets = (presets: Preset[]) => setConfig((c) => ({ ...c, presets }));
 
-  /** Set (or clear, when the body is empty) a project's override of a preset's
-   *  behavior. */
-  const setPresetOverride = (projectId: string, presetId: string, ov: PresetOverride | null) =>
+  /** Add a global preset (name/kind/desc). Optionally seed its body for one
+   *  project right away (`projectId` + `body`); otherwise the body is created
+   *  later, per project, via `generatePresetBody`. */
+  const addPreset = (
+    name: string,
+    kind: Preset["kind"],
+    description: string,
+    projectId?: string,
+    body?: string,
+  ) => {
+    const desc = description.trim();
+    const nm = name.trim() || desc.slice(0, 24);
+    if (!nm || !desc) return;
+    const id = uid();
+    setGlobalPresets([...configRef.current.presets, { id, name: nm, kind, desc }]);
+    const b = body?.trim();
+    if (projectId && b) setPresetBody(projectId, id, kind === "code" ? { command: b } : { prompt: b });
+  };
+
+  /** Update a preset's global fields (name/kind/desc). */
+  const updatePreset = (presetId: string, patch: Partial<Omit<Preset, "id">>) =>
+    setConfig((c) => ({
+      ...c,
+      presets: c.presets.map((p) => (p.id === presetId ? { ...p, ...patch } : p)),
+    }));
+
+  const removePreset = (presetId: string) =>
+    setConfig((c) => ({ ...c, presets: c.presets.filter((p) => p.id !== presetId) }));
+
+  /** Set (or clear, when empty) a project's executable body for a preset. */
+  const setPresetBody = (projectId: string, presetId: string, body: PresetBody | null) =>
     setConfig((c) => {
-      const forProject = { ...(c.presetOverrides[projectId] ?? {}) };
-      const body = ov?.command ?? ov?.prompt;
-      if (!ov || !body?.trim()) delete forProject[presetId];
-      else forProject[presetId] = ov;
-      return { ...c, presetOverrides: { ...c.presetOverrides, [projectId]: forProject } };
+      const forProject = { ...(c.presetBodies[projectId] ?? {}) };
+      const v = body?.command ?? body?.prompt;
+      if (!body || !v?.trim()) delete forProject[presetId];
+      else forProject[presetId] = body;
+      return { ...c, presetBodies: { ...c.presetBodies, [projectId]: forProject } };
     });
 
-  /** Resolve a global preset to its effective form for a project, then run it. */
+  /** Run a preset using THIS project's body. */
   const runPreset = (projectId: string, presetId: string) => {
     const c = configRef.current;
-    const global = c.presets.find((x) => x.id === presetId);
-    if (!global) return;
-    const p = resolvePreset(global, c.presetOverrides[projectId]?.[presetId]);
-    if (p.kind === "ai") {
-      if (!p.prompt?.trim()) {
-        pushToast("err", `${p.name}: 프롬프트가 비어 있어요`);
-        return;
-      }
+    const preset = c.presets.find((x) => x.id === presetId);
+    if (!preset) return;
+    const body = presetBody(preset, c.presetBodies[projectId]?.[presetId]);
+    if (!body) {
+      pushToast("err", `${preset.name}: 이 프로젝트용 내용이 없어요 — ✨로 생성하세요`);
+      return;
+    }
+    if (preset.kind === "ai") {
       if (focusedTermId) {
-        sendPrompt(focusedTermId, p.prompt);
-        pushToast("ok", `${p.name} → 현재 터미널`);
+        sendPrompt(focusedTermId, body);
+        pushToast("ok", `${preset.name} → 현재 터미널`);
       } else {
         pushToast("err", "전송할 터미널이 없어요");
       }
@@ -674,36 +728,29 @@ export function useFleet() {
     // code preset: run the shell command once in the project cwd.
     const project = c.projects.find((pr) => pr.id === projectId);
     if (!project) return;
-    if (!p.command?.trim()) {
-      pushToast("err", `${p.name}: 명령이 비어 있어요`);
-      return;
-    }
     // A pending toast (no auto-dismiss) we replace with the result.
     const pending = uid();
-    setToasts((ts) => [...ts, { id: pending, kind: "info", text: `${p.name} 실행 중…` }]);
-    runCommand(project.path, p.command)
+    setToasts((ts) => [...ts, { id: pending, kind: "info", text: `${preset.name} 실행 중…` }]);
+    runCommand(project.path, body)
       .then(() => {
         dismissToast(pending);
-        pushToast("ok", `${p.name} 완료`);
+        pushToast("ok", `${preset.name} 완료`);
       })
       .catch((e) => {
         dismissToast(pending);
-        pushToast("err", `${p.name} 실패 — ${String(e).slice(0, 200)}`);
+        pushToast("err", `${preset.name} 실패 — ${String(e).slice(0, 200)}`);
       });
   };
 
-  /** Spawn a generator Claude in the project, have it inspect the repo and write
-   *  `.fleet/preset.json`, then apply the body it produced — to the preset's
-   *  global default (`scope="default"`) or this project's override
-   *  (`scope="override"`). Mirrors the planner flow. */
-  const generatePresetBody = (
-    projectId: string,
-    preset: Preset,
-    description: string,
-    scope: "default" | "override",
-  ) => {
-    const project = configRef.current.projects.find((p) => p.id === projectId);
-    if (!project) return;
+  /** Generate THIS project's body for a preset: spawn a generator Claude, have it
+   *  inspect the repo and write `.fleet/preset.json` from the preset's `desc`,
+   *  then store the body it produced in `presetBodies`. Mirrors the planner flow. */
+  const generatePresetBody = (projectId: string, presetId: string) => {
+    const c = configRef.current;
+    const preset = c.presets.find((p) => p.id === presetId);
+    const project = c.projects.find((p) => p.id === projectId);
+    if (!preset || !project) return;
+    const description = preset.desc?.trim() || preset.name;
     const cwd = project.path;
     setPresetGen((g) => ({ ...g, [preset.id]: true }));
     clearPreset(cwd).catch(() => {});
@@ -746,27 +793,14 @@ export function useFleet() {
         }
         const body = (preset.kind === "code" ? gen?.command : gen?.prompt)?.trim();
         if (body) {
-          if (scope === "default") {
-            setConfig((c) => ({
-              ...c,
-              presets: c.presets.map((p) =>
-                p.id === preset.id
-                  ? preset.kind === "code"
-                    ? { ...p, command: body }
-                    : { ...p, prompt: body }
-                  : p,
-              ),
-            }));
-          } else {
-            setPresetOverride(
-              projectId,
-              preset.id,
-              preset.kind === "code" ? { command: body } : { prompt: body },
-            );
-          }
+          setPresetBody(
+            projectId,
+            preset.id,
+            preset.kind === "code" ? { command: body } : { prompt: body },
+          );
           clearPreset(cwd).catch(() => {});
           stop();
-          pushToast("ok", `${preset.name} 채우기 완료`);
+          pushToast("ok", `${preset.name} 생성 완료`);
           return;
         }
       }
@@ -775,30 +809,6 @@ export function useFleet() {
         pushToast("err", `${preset.name}: 생성 시간 초과`);
       }
     }, 2000);
-  };
-
-  /** Create a global preset from a natural-language description, then have AI fill
-   *  its default body by inspecting the current project. */
-  const requestAiPreset = (
-    projectId: string,
-    name: string,
-    kind: Preset["kind"],
-    description: string,
-  ) => {
-    const desc = description.trim();
-    const nm = name.trim() || desc.slice(0, 24);
-    if (!nm || !desc) return;
-    const preset: Preset = { id: uid(), name: nm, kind, desc };
-    setGlobalPresets([...configRef.current.presets, preset]);
-    generatePresetBody(projectId, preset, desc, "default");
-  };
-
-  /** Re-generate a preset's body for THIS project (stored as an override), reusing
-   *  its original AI description (falling back to its name). */
-  const refillPreset = (projectId: string, presetId: string) => {
-    const preset = configRef.current.presets.find((p) => p.id === presetId);
-    if (!preset) return;
-    generatePresetBody(projectId, preset, preset.desc?.trim() || preset.name, "override");
   };
 
   // --- web tabs (logged-in AI sites) ---
@@ -816,32 +826,38 @@ export function useFleet() {
       ...c,
       webTabs: c.webTabs.map((w) => (w.id === id ? { ...w, name } : w)),
     }));
-  /** Open a web tab: embed-blocked sites (ChatGPT) launch in the Fleet-controlled
-   *  Chrome (CDP); others open as an embedded webview window. */
+  /** Open a web tab as an embedded webview window with its own isolated login
+   *  session (profile = tab id). Bot-protected sites (ChatGPT) render fine here
+   *  with the spoofed desktop UA, so everything goes through the embed. */
   const openTab = (t: WebTab) => {
-    if (embedBlocked(t.url)) cdpOpen(t.url).catch(() => {});
-    else openWebTab(t.id, t.url, `Fleet · ${t.name}`).catch(() => {});
+    openWebTab(t.id, t.url, `Fleet · ${t.name}`, t.id).catch(() => {});
   };
   const openAllWebTabs = () => configRef.current.webTabs.forEach(openTab);
   /** Inject + submit `text` in one embedded web tab (no-op if not open). */
   const sendToWebTab = (t: WebTab, text: string) =>
     webEval(t.id, buildInjectJs(t.url, text)).catch(() => {});
-  /** Inject the prompt into every AI chat tab in the Fleet-controlled Chrome. */
-  const cdpBroadcast = async (text: string) => {
-    try {
-      const targets = await cdpTargets();
-      for (const t of targets) {
-        if (isKnownChatSite(t.url)) cdpEval(t.ws, buildInjectJs(t.url, text)).catch(() => {});
-      }
-    } catch {
-      /* Chrome not running */
-    }
-  };
-  /** Fan a prompt out to both embedded web tabs AND the real Chrome tabs. */
+  /** Fan a prompt out to every open embedded web tab. */
   const broadcastToWebTabs = (text: string) => {
     configRef.current.webTabs.forEach((t) => sendToWebTab(t, text));
-    cdpBroadcast(text);
   };
+  /** A file arrived from a web tab's download interceptor (backend `web-artifact`). */
+  const onWebArtifact = (p: { tab: string; path: string; url: string }) => {
+    const tabId = p.tab.replace(/^web-/, "");
+    const name = p.path.split(/[\\/]/).pop() || "download";
+    const art: WebArtifact = {
+      id: uid(),
+      tabId,
+      name,
+      path: p.path,
+      url: p.url,
+      createdAt: Date.now(),
+    };
+    setArtifacts((a) => [art, ...a].slice(0, 200));
+    pushToast("ok", `산출물 저장됨 · ${name}`);
+  };
+  /** Open a harvested file with the OS default app. */
+  const openArtifact = (a: WebArtifact) => openPath(a.path).catch(() => {});
+  const clearArtifacts = () => setArtifacts([]);
 
   // --- queue board ---
   const patchBoard = (projectId: string, fn: (b: QueueBoard) => QueueBoard) =>
@@ -1120,6 +1136,14 @@ export function useFleet() {
     }
   };
 
+  /** Switch to a terminal's project and bring it into the focused pane. Used by
+   *  the attention peek, clickable pings, and the command palette to get you from
+   *  "that session needs me" to looking at it in one action, across projects. */
+  const jumpToTerm = (projectId: string, termId: string) => {
+    selectProject(projectId);
+    activateTerm(projectId, termId);
+  };
+
   /** Reveal a terminal in its OWN pane (tile), so parallel worktree steps are all
    *  visible AND get a real PTY size at once — instead of replacing the focused
    *  pane (which would push earlier steps to 0-size and stall them). Fills an
@@ -1323,6 +1347,21 @@ export function useFleet() {
     // Remember the claude transcript for this terminal so a finished worktree
     // step can be imported into the project's resume list.
     if (h.transcriptPath) wtTranscript.current[termId] = h.transcriptPath;
+
+    // PreToolUse carries the live "what is it doing" line; update & keep going.
+    // A fresh prompt (UserPromptSubmit) clears it so we don't show a stale tool.
+    if (event === "PreToolUse") {
+      const label = describeActivity(h.toolName, h.toolDetail);
+      if (label) setActivity((a) => (a[termId] === label ? a : { ...a, [termId]: label }));
+    } else if (event === "UserPromptSubmit") {
+      setActivity((a) => {
+        if (!(termId in a)) return a;
+        const n = { ...a };
+        delete n[termId];
+        return n;
+      });
+    }
+
     let status: TermStatus | null = null;
     if (event === "UserPromptSubmit" || event === "PreToolUse") status = "busy";
     else if (notificationType === "permission_prompt") status = "waiting";
@@ -1332,17 +1371,30 @@ export function useFleet() {
 
     hookDriven.current[termId] = true;
     if (status === "busy") awaiting.current[termId] = false;
+    // Once a turn ends (idle), there's no live activity to show anymore.
+    if (status === "idle")
+      setActivity((a) => {
+        if (!(termId in a)) return a;
+        const n = { ...a };
+        delete n[termId];
+        return n;
+      });
     setStatuses((s) => (s[termId] === status ? s : { ...s, [termId]: status }));
 
     const cfg = configRef.current;
     const term = cfg.terminals.find((t) => t.id === termId);
     const project = term && cfg.projects.find((p) => p.id === term.projectId);
     const where = [project?.name, term?.title].filter(Boolean).join(" · ") || "Claude";
+    // Ping (OS + clickable in-app toast) so parallel sessions surface themselves.
+    // Skip the in-app toast for the session you're already looking at.
+    const jump = term ? { projectId: term.projectId, termId } : undefined;
+    const elsewhere = termId !== focusedRef.current;
     if (status === "waiting") {
       notify("승인 필요", `${where} — 권한 승인을 기다리고 있어요`);
+      if (elsewhere) pushToast("info", `${where} — 승인 필요`, jump);
     } else if (status === "idle" && (event === "Stop" || event === "StopFailure")) {
-      // Always ping on completion, even if you're looking right at it.
       notify("작업 완료", `${where} — 응답이 끝났어요`);
+      if (elsewhere) pushToast("ok", `${where} — 완료`, jump);
     }
   };
 
@@ -1358,8 +1410,13 @@ export function useFleet() {
       }
     })();
     const un = listen<HookEvent>("hook-event", (e) => onHookEvent(e.payload));
+    const unArt = listen<{ tab: string; path: string; url: string }>(
+      "web-artifact",
+      (e) => onWebArtifact(e.payload),
+    );
     return () => {
       un.then((f) => f());
+      unArt.then((f) => f());
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -1712,6 +1769,16 @@ export function useFleet() {
     return m;
   }, [config.terminals, statuses]);
 
+  /** Count of terminals blocked on a permission prompt, per project — the rail
+   *  shows this as a badge and the window title sums it. */
+  const waitingByProject = useMemo(() => {
+    const m: Record<string, number> = {};
+    for (const t of config.terminals) {
+      if (statuses[t.id] === "waiting") m[t.projectId] = (m[t.projectId] ?? 0) + 1;
+    }
+    return m;
+  }, [config.terminals, statuses]);
+
   /** The most attention-worthy live status across each project's terminals, so
    *  the rail can show one colored dot: a project waiting on a permission prompt
    *  outranks a busy one, which outranks idle. Absent = nothing live. */
@@ -1737,6 +1804,9 @@ export function useFleet() {
     focusedTerm,
     liveByProject,
     projectStatus,
+    waitingByProject,
+    activity,
+    jumpToTerm,
     sessions,
     sessionsLoading,
     refreshSessions,
@@ -1760,10 +1830,12 @@ export function useFleet() {
     splitWithTerm,
     movePane,
     setGlobalPresets,
-    setPresetOverride,
+    addPreset,
+    updatePreset,
+    removePreset,
+    setPresetBody,
     runPreset,
-    requestAiPreset,
-    refillPreset,
+    generatePresetBody,
     presetGen,
     toasts,
     dismissToast,
@@ -1774,6 +1846,9 @@ export function useFleet() {
     openAllWebTabs,
     sendToWebTab,
     broadcastToWebTabs,
+    artifacts,
+    openArtifact,
+    clearArtifacts,
     planning,
     requestPlan,
     loadPlan,

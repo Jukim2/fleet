@@ -138,19 +138,35 @@ a {
 }
 
 .app {
+  /* Always three explicit tracks (closed side = 0px) so the track COUNT never
+     changes and grid-template-columns interpolates — the panels glide open. */
   display: grid;
-  grid-template-columns: 1fr;
+  grid-template-columns: 0px 1fr 0px;
   height: 100vh;
   transition: grid-template-columns var(--dur) var(--ease-ios);
 }
 .app.rail-open {
-  grid-template-columns: 220px 1fr;
+  grid-template-columns: 220px 1fr 0px;
 }
 .app.drawer-open {
-  grid-template-columns: 1fr 360px;
+  grid-template-columns: 0px 1fr 360px;
 }
 .app.rail-open.drawer-open {
   grid-template-columns: 220px 1fr 360px;
+}
+
+/* Panels stay mounted and sit in overflow-clipped slots: as the track width
+   animates, the fixed-width panel is revealed/hidden instead of popping. The
+   fixed width also stops text from reflowing mid-animation. */
+.rail-slot,
+.drawer-slot {
+  min-width: 0;
+  overflow: hidden;
+}
+/* right drawer is pinned to the window edge, so it reveals right→left */
+.drawer-slot {
+  display: flex;
+  justify-content: flex-end;
 }
 
 /* Floating edge toggles shown when a side panel is collapsed. */

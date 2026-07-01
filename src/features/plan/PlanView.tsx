@@ -1148,11 +1148,33 @@ export default function PlanView({
             </div>
           )}
 
-          {/* one-line help so the canvas interactions are discoverable */}
+          {/* canvas interactions, tucked into a ? so they don't cover the graph */}
           {hasGraph && layout && (
-            <div className="plan-hint">
-              우클릭(또는 Space)드래그 이동 · 휠 확대/축소(F 맞춤) · 빈 곳 드래그로 박스 선택 · 소블럭
-              우측 점을 끌어 선행 연결 · 점선 클릭 해제
+            <div className="plan-help" tabIndex={0} onMouseDown={(e) => e.stopPropagation()}>
+              ?
+              <div className="plan-tip">
+                <div className="plan-tip-title">캔버스 조작</div>
+                <div className="plan-tip-row hot">
+                  <span className="plan-kbd">우클릭</span>
+                  <span className="plan-kbd">Space</span>
+                  <span>드래그 — 화면 이동</span>
+                </div>
+                <div className="plan-tip-row hot">
+                  <span className="plan-kbd">휠</span>
+                  <span>확대 / 축소</span>
+                  <span className="plan-kbd">F</span>
+                  <span>화면 맞춤</span>
+                </div>
+                <div className="plan-tip-row">
+                  빈 곳 <b>드래그</b>로 박스 선택
+                </div>
+                <div className="plan-tip-row">
+                  소블럭 우측 점을 끌어 <b>선행 연결</b>
+                </div>
+                <div className="plan-tip-row">
+                  연결 점선 <b>클릭</b>으로 해제
+                </div>
+              </div>
             </div>
           )}
 

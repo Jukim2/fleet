@@ -14,7 +14,8 @@ export async function loadConfig(): Promise<FleetConfig> {
       blocks: parsed.blocks ?? [],
       // may be a legacy Record<projectId, Preset[]> on disk; migratePresets sorts it
       presets: parsed.presets ?? [],
-      presetOverrides: parsed.presetOverrides ?? {},
+      // `presetOverrides` was the pre-redesign field name; migratePresets folds it in
+      presetBodies: parsed.presetBodies ?? parsed.presetOverrides ?? {},
       boards: parsed.boards ?? {},
       webTabs: parsed.webTabs ?? [],
       plans: parsed.plans ?? {},

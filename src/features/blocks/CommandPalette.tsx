@@ -1,21 +1,37 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Preset, PresetOverride } from "../../types";
-import { effectiveBody } from "../../lib/presets";
+import { Preset, PresetBody } from "../../types";
+import { presetBody } from "../../lib/presets";
+import { AttentionItem } from "../attention/AttentionPeek";
 import "./blocks.css";
 import "../presets/presets.css";
 
+type Item =
+  | { type: "preset"; key: string; presetId: string; name: string; kind: Preset["kind"]; sub: string }
+  | { type: "jump"; key: string; projectId: string; termId: string; name: string; sub: string };
+
+/**
+ * ⌘K command palette. Two things you can do from anywhere:
+ *  - run a preset in the active project, or
+ *  - jump to any terminal in any project (cross-project navigation).
+ */
 export default function CommandPalette({
   open,
   presets,
-  overrides,
+  bodies,
+  jumpItems,
+  activeProjectId,
   onClose,
   onRun,
+  onJump,
 }: {
   open: boolean;
   presets: Preset[];
-  overrides: Record<string, PresetOverride>;
+  bodies: Record<string, PresetBody>;
+  jumpItems: AttentionItem[];
+  activeProjectId: string | null;
   onClose: () => void;
   onRun: (presetId: string) => void;
+  onJump: (projectId: string, termId: string) => void;
 }) {
   const [q, setQ] = useState("");
   const [sel, setSel] = useState(0);
@@ -29,21 +45,44 @@ export default function CommandPalette({
     }
   }, [open]);
 
-  const filtered = useMemo(
-    () =>
-      presets.filter(
-        (p) =>
-          p.name.toLowerCase().includes(q.toLowerCase()) ||
-          effectiveBody(p, overrides[p.id]).toLowerCase().includes(q.toLowerCase()),
-      ),
-    [presets, overrides, q],
-  );
+  const items = useMemo<Item[]>(() => {
+    const presetItems: Item[] = presets.map((p) => ({
+      type: "preset",
+      key: `p:${p.id}`,
+      presetId: p.id,
+      name: p.name,
+      kind: p.kind,
+      sub: presetBody(p, bodies[p.id]) || p.desc || "(미생성)",
+    }));
+    // Terminals in OTHER projects first (that's the cross-project win), each's
+    // live activity as the subtitle so you can pick the right one.
+    const jump: Item[] = [...jumpItems]
+      .sort((a, b) => Number(a.projectId === activeProjectId) - Number(b.projectId === activeProjectId))
+      .map((it) => ({
+        type: "jump",
+        key: `t:${it.termId}`,
+        projectId: it.projectId,
+        termId: it.termId,
+        name: `${it.projectName} · ${it.title}`,
+        sub: it.activity || "",
+      }));
+    return [...presetItems, ...jump];
+  }, [presets, bodies, jumpItems, activeProjectId]);
+
+  const filtered = useMemo(() => {
+    const needle = q.toLowerCase();
+    if (!needle) return items;
+    return items.filter(
+      (it) => it.name.toLowerCase().includes(needle) || it.sub.toLowerCase().includes(needle),
+    );
+  }, [items, q]);
 
   if (!open) return null;
 
-  const run = (p: Preset | undefined) => {
-    if (!p) return;
-    onRun(p.id);
+  const run = (it: Item | undefined) => {
+    if (!it) return;
+    if (it.type === "preset") onRun(it.presetId);
+    else onJump(it.projectId, it.termId);
     onClose();
   };
 
@@ -67,7 +106,7 @@ export default function CommandPalette({
         <input
           ref={inputRef}
           className="palette-input"
-          placeholder="프리셋 검색…  (Enter: 실행)"
+          placeholder="프리셋 실행 · 세션으로 이동…  (Enter)"
           value={q}
           onChange={(e) => {
             setQ(e.target.value);
@@ -76,24 +115,23 @@ export default function CommandPalette({
           onKeyDown={onKey}
         />
         <div className="palette-list">
-          {presets.length === 0 && (
-            <div className="palette-empty">아직 프리셋이 없어요. 프리셋 패널에서 추가하세요.</div>
-          )}
-          {presets.length > 0 && filtered.length === 0 && (
-            <div className="palette-empty">일치하는 프리셋이 없어요.</div>
-          )}
-          {filtered.map((p, i) => (
+          {filtered.length === 0 && <div className="palette-empty">일치하는 항목이 없어요.</div>}
+          {filtered.map((it, i) => (
             <div
-              key={p.id}
+              key={it.key}
               className={`palette-item ${i === sel ? "sel" : ""}`}
               onMouseEnter={() => setSel(i)}
-              onClick={() => run(p)}
+              onClick={() => run(it)}
             >
               <span className="palette-name">
-                <span className={`preset-tag ${p.kind}`}>{p.kind === "code" ? "코드" : "AI"}</span>
-                {p.name}
+                {it.type === "preset" ? (
+                  <span className={`preset-tag ${it.kind}`}>{it.kind === "code" ? "코드" : "AI"}</span>
+                ) : (
+                  <span className="preset-tag jump">이동</span>
+                )}
+                {it.name}
               </span>
-              <span className="palette-text">{effectiveBody(p, overrides[p.id])}</span>
+              {it.sub && <span className="palette-text">{it.sub}</span>}
             </div>
           ))}
         </div>

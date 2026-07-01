@@ -96,6 +96,10 @@ export default function ProjectView({
   const [draft, setDraft] = useState("");
   const termsById = Object.fromEntries(terminals.map((t) => [t.id, t]));
   const layoutLeaves = layout ? leaves(layout) : [];
+  // Tabs that exist but aren't in any pane — candidates to fill the vacated side
+  // when you split a pane by dropping its OWN terminal onto an edge.
+  const shownTermIds = new Set(layoutLeaves.map((l) => l.termId).filter(Boolean) as string[]);
+  const unshownTerminals = terminals.filter((t) => !shownTermIds.has(t.id));
 
   // Measure each pane body relative to the stage so terminals can float over them.
   useLayoutEffect(() => {
@@ -162,13 +166,20 @@ export default function ProjectView({
   const onDragOverStage = (e: React.DragEvent) => {
     e.preventDefault();
     const at = paneAt(e.clientX, e.clientY);
-    // No valid target over an empty area, or over the pane that already shows
-    // the dragged terminal (dropping there would just duplicate it).
-    if (!at || (dragTermId && at.hit.termId === dragTermId)) {
+    if (!at) {
       setHint(null);
       return;
     }
     const zone = zoneOf(at.hit.rect, at.x, at.y);
+    // Dropping a terminal onto its OWN pane only makes sense as a directional
+    // split — and only if a free (unshown) tab can fill the side it vacates.
+    // Otherwise (center, or nothing to fill with) there's nothing to do.
+    if (dragTermId && at.hit.termId === dragTermId) {
+      if (zone === "center" || unshownTerminals.length === 0) {
+        setHint(null);
+        return;
+      }
+    }
     setHint({ rect: hintRect(at.hit.rect, zone), zone });
   };
 
@@ -181,12 +192,23 @@ export default function ProjectView({
     setDragTermId(null);
     setHint(null);
     if (!termId || !at) return;
-    // Dropping a terminal onto the pane already showing it is a no-op.
-    if (at.hit.termId === termId) return;
     const zone = zoneOf(at.hit.rect, at.x, at.y);
     // Dragging a whole pane (VS Code-style): move it and collapse the old slot.
     if (sourcePaneId) {
       onMovePane(sourcePaneId, at.hit.paneId, zone);
+      return;
+    }
+    // Dropping a terminal onto its OWN pane: split it, keeping this terminal on
+    // the dropped side and filling the vacated side with a free (unshown) tab.
+    // We split with the FILL terminal on the *opposite* side, which leaves the
+    // dragged one where it was dropped — no duplicate, no empty pane.
+    if (at.hit.termId === termId) {
+      const fill = unshownTerminals[0];
+      if (!fill || zone === "center") return;
+      if (zone === "left") onSplitWithTerm(at.hit.paneId, "row", false, fill.id);
+      else if (zone === "right") onSplitWithTerm(at.hit.paneId, "row", true, fill.id);
+      else if (zone === "top") onSplitWithTerm(at.hit.paneId, "col", false, fill.id);
+      else onSplitWithTerm(at.hit.paneId, "col", true, fill.id);
       return;
     }
     if (zone === "center") onSetLeafTerm(at.hit.paneId, termId);

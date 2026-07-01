@@ -22,34 +22,45 @@ export type Terminal = {
 /** A reusable prompt block. */
 export type Block = { id: string; name: string; text: string };
 
-/** A one-click action. Presets are **global** — every project sees them — but
- *  each project may override the behavior (command/prompt) via `PresetOverride`.
- *  - "code": runs `command` once in the project cwd (fire-and-forget launcher),
- *    reporting only success/failure — never touches the claude session.
- *  - "ai":   sends `prompt` to the focused terminal's claude session.
- *  The `command`/`prompt` here are the **default** behavior used when a project
- *  has no override. */
+/** A one-click action. Presets are **global** — every project shares the same
+ *  name / kind / description — but the actual **body that runs is per-project**
+ *  and is generated (usually by AI) separately in each project from `desc`.
+ *  - "code": runs a shell command once in the project cwd (fire-and-forget
+ *    launcher), reporting only success/failure — never touches the claude session.
+ *  - "ai":   sends a prompt to the focused terminal's claude session.
+ *  A preset itself carries no body; see `PresetBody` (per project). */
 export type Preset = {
   id: string;
   name: string;
   kind: "code" | "ai";
-  /** code presets: default shell command run in the project cwd */
-  command?: string;
-  /** ai presets: default prompt sent to the focused terminal */
-  prompt?: string;
-  /** original natural-language description, if AI-generated — lets us re-fill
-   *  the body per-project on demand. Not shown in the name/command UI. */
-  desc?: string;
+  /** natural-language description of what this preset does. Shared across all
+   *  projects; each project's executable body is AI-generated from this. */
+  desc: string;
 };
 
-/** A project's override of a global preset's behavior. Empty fields fall back to
- *  the preset's default. Only the body (command/prompt) is overridable — name and
- *  kind stay global. */
-export type PresetOverride = { command?: string; prompt?: string };
+/** A project's executable body for a global preset. There is no global default:
+ *  every project generates (or types) its own. `command` for "code" presets,
+ *  `prompt` for "ai" presets. Absent = not created yet for this project. */
+export type PresetBody = { command?: string; prompt?: string };
 
 /** A logged-in web AI site (ChatGPT / Claude.ai / Gemini / ...) opened as its
  *  own native webview window and driven via JS injection. */
 export type WebTab = { id: string; name: string; url: string };
+
+/** A file harvested from a web tab (e.g. a GPT-generated image saved via the
+ *  download interceptor). Non-persisted live state; the file lives on disk. */
+export type WebArtifact = {
+  id: string;
+  /** the web tab that produced it */
+  tabId: string;
+  /** filename on disk */
+  name: string;
+  /** absolute path where it was saved */
+  path: string;
+  /** original in-page source URL, if known */
+  url?: string;
+  createdAt: number;
+};
 
 /**
  * A plan is ONE persistent, evolving graph per project — not a per-request list.
@@ -146,10 +157,10 @@ export type FleetConfig = {
   layouts: Record<string, LayoutNode | null>;
   blocks: Block[];
   /** global one-click action presets (code launchers + ai prompts), shown in
-   *  every project */
+   *  every project. Bodies live per-project in `presetBodies`. */
   presets: Preset[];
-  /** projectId -> (presetId -> per-project behavior override) */
-  presetOverrides: Record<string, Record<string, PresetOverride>>;
+  /** projectId -> (presetId -> that project's executable body) */
+  presetBodies: Record<string, Record<string, PresetBody>>;
   /** projectId -> queue board */
   boards: Record<string, QueueBoard>;
   /** logged-in web AI sites you can broadcast prompts to */
@@ -180,8 +191,14 @@ export type PlanDir = "LR" | "RL" | "TB" | "BT" | "H2" | "V2" | "RAD" | "GRID";
 /** Sibling ordering within a parent block. */
 export type PlanSort = "added" | "title";
 
-/** A transient corner notification (preset run result, etc.). */
-export type Toast = { id: string; kind: "ok" | "err" | "info"; text: string };
+/** A transient corner notification (preset run result, etc.). When `action` is
+ *  set the toast is clickable and jumps to that terminal (cross-project). */
+export type Toast = {
+  id: string;
+  kind: "ok" | "err" | "info";
+  text: string;
+  action?: { projectId: string; termId: string };
+};
 
 /** Live, non-persisted status of a terminal.
  *  "waiting" = Claude is blocked on a permission/input prompt (needs you). */
@@ -202,7 +219,7 @@ export const emptyConfig: FleetConfig = {
   layouts: {},
   blocks: [],
   presets: [],
-  presetOverrides: {},
+  presetBodies: {},
   boards: {},
   webTabs: [],
   plans: {},

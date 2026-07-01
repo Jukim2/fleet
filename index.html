@@ -5,6 +5,21 @@
     <link rel="icon" type="image/svg+xml" href="/vite.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Fleet</title>
+    <!-- Applied before the bundle loads, so the first paint is the dark app
+         background — no white body margin ("border"), no default scrollbar,
+         no flash of unstyled content on launch. -->
+    <style>
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        background: #0e0e11;
+        overflow: hidden;
+      }
+      #root {
+        height: 100%;
+      }
+    </style>
   </head>
 
   <body>

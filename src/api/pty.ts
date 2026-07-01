@@ -36,4 +36,7 @@ export type HookEvent = {
   notificationType: string;
   sessionId: string;
   transcriptPath: string;
+  /** PreToolUse only: tool about to run + a short detail (file path, command…) */
+  toolName: string;
+  toolDetail: string;
 };

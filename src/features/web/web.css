@@ -197,6 +197,51 @@
   border-color: var(--accent);
 }
 
+/* artifact inbox — files harvested from web tabs */
+.web-artifacts {
+  border-bottom: 1px solid var(--border);
+  padding: 10px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.web-art-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.web-art-head strong {
+  font-size: 13px;
+}
+.web-art-sub {
+  flex: 1;
+  font-size: 11px;
+  color: var(--muted);
+}
+.web-art-list {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  max-height: 160px;
+  overflow-y: auto;
+}
+.web-art-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.web-art-name {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 /* button variants not defined globally */
 .btn.primary {
   background: var(--accent);

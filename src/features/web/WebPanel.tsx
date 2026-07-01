@@ -1,10 +1,11 @@
 import { useState } from "react";
-import { WebTab } from "../../types";
-import { embedBlocked, knownSites } from "../../lib/webAdapters";
+import { WebTab, WebArtifact } from "../../types";
+import { knownSites } from "../../lib/webAdapters";
 import "./web.css";
 
 export default function WebPanel({
   webTabs,
+  artifacts,
   onClose,
   onAdd,
   onRemove,
@@ -12,8 +13,11 @@ export default function WebPanel({
   onOpenAll,
   onSend,
   onBroadcast,
+  onOpenArtifact,
+  onClearArtifacts,
 }: {
   webTabs: WebTab[];
+  artifacts: WebArtifact[];
   onClose: () => void;
   onAdd: (name: string, url: string) => void;
   onRemove: (id: string) => void;
@@ -21,6 +25,8 @@ export default function WebPanel({
   onOpenAll: () => void;
   onSend: (t: WebTab, text: string) => void;
   onBroadcast: (text: string) => void;
+  onOpenArtifact: (a: WebArtifact) => void;
+  onClearArtifacts: () => void;
 }) {
   const [name, setName] = useState("");
   const [url, setUrl] = useState("");
@@ -38,33 +44,19 @@ export default function WebPanel({
       <div className="web" onMouseDown={(e) => e.stopPropagation()}>
         <header className="web-head">
           <strong>웹 AI 탭</strong>
-          <span className="web-sub">로그인된 사이트에 한 번에 같은 프롬프트를 보내요</span>
+          <span className="web-sub">
+            각 탭은 독립 로그인 세션이에요 — 같은 사이트를 여러 계정으로 쓰려면 탭을 여러 개 추가하세요
+          </span>
           <button className="icon-btn" onClick={onClose} title="닫기">
             ✕
           </button>
         </header>
 
-        {/* ChatGPT etc. — driven via a Fleet-controlled Chrome (no install) */}
-        <details className="web-bridge" open>
-          <summary>ChatGPT 등 (<span className="web-badge">브라우저</span> 표시) 사용법 — 설치 불필요</summary>
-          <p className="web-bridge-note">
-            ChatGPT는 임베드가 막혀서, <b>“브라우저로 열기”</b>를 누르면 Fleet 전용 Chrome 창이
-            하나 뜹니다. 평소 쓰는 브라우저와는 <b>별개의 창</b>이라 <b>그 창에서 한 번만 로그인</b>
-            하면 되고, 이후엔 로그인이 유지돼 다시 안 해도 됩니다. (브라우저 보안상 평소 창에는 직접
-            붙을 수 없어요.)
-          </p>
-          <ol className="web-steps">
-            <li>해당 행의 <b>“브라우저로 열기”</b> → 뜬 Chrome 창에서 로그인 (최초 1회만)</li>
-            <li>그 창은 그냥 열어둔 채로 — Fleet이 그 탭에 직접 입력합니다</li>
-            <li>아래 칸에 프롬프트 입력 후 <b>“전체 전송”</b> → 열린 모든 탭(임베드 + 그 Chrome)에 동시 입력</li>
-          </ol>
-        </details>
-
         {/* Broadcast box */}
         <div className="web-cast">
           <textarea
             className="web-msg"
-            placeholder="프롬프트 입력 → 열린 모든 AI 탭(임베드 + Chrome)에 동시 전송…"
+            placeholder="프롬프트 입력 → 열린 모든 AI 탭에 동시 전송…"
             value={msg}
             onChange={(e) => setMsg(e.target.value)}
             onKeyDown={(e) => {
@@ -91,6 +83,31 @@ export default function WebPanel({
           </div>
         </div>
 
+        {/* Artifact inbox — files harvested from web tabs (e.g. GPT images) */}
+        {artifacts.length > 0 && (
+          <div className="web-artifacts">
+            <div className="web-art-head">
+              <strong>산출물</strong>
+              <span className="web-art-sub">웹 탭에서 받은 파일</span>
+              <button className="btn sm" onClick={onClearArtifacts} title="목록 비우기">
+                비우기
+              </button>
+            </div>
+            <div className="web-art-list">
+              {artifacts.map((a) => (
+                <div className="web-art-row" key={a.id}>
+                  <span className="web-art-name" title={a.path}>
+                    {a.name}
+                  </span>
+                  <button className="btn sm" onClick={() => onOpenArtifact(a)} title="파일 열기">
+                    열기
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
         {/* Tab list */}
         <div className="web-list">
           {webTabs.length === 0 && (
@@ -99,22 +116,11 @@ export default function WebPanel({
           {webTabs.map((t) => (
             <div className="web-row" key={t.id}>
               <div className="web-row-main" title={t.url}>
-                <span className="web-name">
-                  {t.name}
-                  {embedBlocked(t.url) && <span className="web-badge">브라우저</span>}
-                </span>
+                <span className="web-name">{t.name}</span>
                 <span className="web-url">{t.url}</span>
               </div>
-              <button
-                className="btn sm"
-                onClick={() => onOpen(t)}
-                title={
-                  embedBlocked(t.url)
-                    ? "임베드가 막힌 사이트 — 기본 브라우저에서 엽니다 (유저스크립트 필요)"
-                    : "임베드 창 열기 / 포커스"
-                }
-              >
-                {embedBlocked(t.url) ? "브라우저로 열기" : "열기"}
+              <button className="btn sm" onClick={() => onOpen(t)} title="탭 열기 / 포커스">
+                열기
               </button>
               <button
                 className="btn sm"

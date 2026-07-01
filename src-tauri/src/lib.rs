@@ -70,6 +70,7 @@ pub fn run() {
             exec::run_command,
             webtabs::open_web_tab,
             webtabs::web_eval,
+            webtabs::web_eval_cb,
             webtabs::close_web_tab,
             webtabs::web_tab_open,
             cdp::cdp_open,

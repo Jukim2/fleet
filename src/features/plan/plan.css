@@ -704,19 +704,102 @@
 }
 
 /* faint interaction hint, top-left of canvas */
-.plan-hint {
+/* ? help button (top-left) + hover tooltip listing canvas interactions */
+.plan-help {
   position: absolute;
   left: 12px;
   top: 12px;
-  padding: 4px 9px;
-  border-radius: 7px;
-  font-size: 11px;
-  color: var(--muted);
-  background: color-mix(in srgb, var(--surface) 80%, transparent);
+  z-index: 6;
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--surface) 92%, transparent);
   border: 1px solid var(--border);
-  pointer-events: none;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+  cursor: help;
   user-select: none;
-  z-index: 5;
+  backdrop-filter: blur(4px);
+  transition: all var(--dur-fast) var(--ease-out);
+}
+.plan-help:hover,
+.plan-help:focus-visible {
+  color: var(--text);
+  border-color: var(--accent);
+}
+.plan-tip {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 0;
+  width: 258px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 11px 12px;
+  border-radius: 10px;
+  background: #101014;
+  border: 1px solid var(--border);
+  box-shadow: 0 14px 34px rgba(0, 0, 0, 0.5);
+  font-size: 11.5px;
+  color: var(--muted);
+  opacity: 0;
+  transform: translateY(-4px) scale(0.98);
+  transform-origin: top left;
+  pointer-events: none;
+  transition:
+    opacity var(--dur-fast) var(--ease-out),
+    transform var(--dur-fast) var(--ease-out);
+}
+.plan-help:hover .plan-tip,
+.plan-help:focus-visible .plan-tip {
+  opacity: 1;
+  transform: translateY(0) scale(1);
+}
+.plan-tip-title {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: var(--text);
+  margin-bottom: 1px;
+}
+.plan-tip-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 5px;
+  line-height: 1.5;
+}
+.plan-tip-row b {
+  color: var(--text);
+  font-weight: 600;
+}
+/* the two most-used gestures — pan + fit — get an accent-highlighted row */
+.plan-tip-row.hot {
+  color: var(--text);
+  padding: 4px 7px;
+  margin: 0 -3px;
+  border-radius: 7px;
+  background: rgba(167, 139, 250, 0.1);
+}
+.plan-kbd {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 6px;
+  border-radius: 5px;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid var(--border);
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--text);
+}
+.plan-tip-row.hot .plan-kbd {
+  background: rgba(167, 139, 250, 0.18);
+  border-color: rgba(167, 139, 250, 0.4);
+  color: var(--accent);
 }
 /* floating zoom / fit controls */
 .plan-zoom {
@@ -762,9 +845,14 @@
   color: var(--text);
 }
 .plan-zoom-btn.fit {
-  margin-left: 2px;
+  margin-left: 4px;
   border-left: 1px solid var(--border);
   border-radius: 0 6px 6px 0;
+  color: var(--accent);
+}
+.plan-zoom-btn.fit:hover {
+  background: rgba(167, 139, 250, 0.16);
+  color: var(--accent);
 }
 
 .plan-node {

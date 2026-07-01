@@ -1,4 +1,8 @@
 .drawer {
+  width: 360px;
+  flex-shrink: 0;
+  height: 100%;
+  box-sizing: border-box;
   background: var(--rail);
   border-left: 1px solid var(--border);
   display: flex;

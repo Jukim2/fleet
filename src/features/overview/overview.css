@@ -1,0 +1,234 @@
+/* 전체 현황 — global overview mode (summon/dismiss full-screen overlay) */
+.ov-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 250;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 8vh 16px 16px;
+  background: rgba(0, 0, 0, 0.5);
+  animation: fleet-fade-in var(--dur-fast) var(--ease-out);
+}
+.ov {
+  width: min(720px, 94vw);
+  max-height: 82vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  box-shadow: 0 28px 72px rgba(0, 0, 0, 0.6);
+  overflow: hidden;
+  animation: fleet-pop-in var(--dur) var(--ease-out);
+}
+.ov-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--border);
+}
+.ov-title {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text);
+}
+.ov-counts {
+  display: flex;
+  gap: 6px;
+  flex: 1;
+}
+.ov-chip {
+  font-size: 10.5px;
+  font-weight: 700;
+  border-radius: 6px;
+  padding: 2px 8px;
+}
+.ov-chip.waiting {
+  color: var(--amber);
+  background: rgba(251, 191, 36, 0.16);
+}
+.ov-chip.busy {
+  color: var(--accent);
+  background: rgba(167, 139, 250, 0.16);
+}
+.ov-chip.idle {
+  color: var(--green);
+  background: rgba(74, 222, 128, 0.14);
+}
+.ov-chip.muted {
+  color: var(--muted);
+  background: rgba(255, 255, 255, 0.06);
+}
+.ov-x {
+  background: none;
+  border: none;
+  color: var(--muted);
+  font-size: 14px;
+}
+.ov-x:hover {
+  color: var(--text);
+}
+.ov-body {
+  overflow-y: auto;
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.ov-empty,
+.ov-none {
+  padding: 16px 10px;
+  color: var(--muted);
+  font-size: 12.5px;
+}
+.ov-none {
+  padding: 8px 12px;
+  font-size: 11.5px;
+}
+.ov-group {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.015);
+}
+.ov-group-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+}
+.ov-caret {
+  background: none;
+  border: none;
+  color: var(--muted);
+  font-size: 10px;
+  width: 16px;
+  flex-shrink: 0;
+}
+.ov-proj {
+  background: none;
+  border: none;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+  padding: 2px 4px;
+  border-radius: 5px;
+}
+.ov-proj:hover {
+  color: var(--accent);
+}
+.ov-livecount {
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--muted);
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 7px;
+  padding: 1px 6px;
+}
+.ov-spacer {
+  flex: 1;
+}
+.ov-plan {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 10.5px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.ov-plan-bar {
+  width: 54px;
+  height: 5px;
+  border-radius: 99px;
+  background: rgba(255, 255, 255, 0.1);
+  overflow: hidden;
+}
+.ov-plan-fill {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+  border-radius: 99px;
+  transition: width var(--dur) var(--ease-out);
+}
+.ov-board {
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--green);
+  background: rgba(74, 222, 128, 0.14);
+  border-radius: 6px;
+  padding: 1px 6px;
+}
+.ov-sessions {
+  display: flex;
+  flex-direction: column;
+  padding: 0 6px 6px;
+  gap: 2px;
+}
+.ov-row {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: none;
+  padding: 7px 8px;
+  border-radius: 8px;
+  color: var(--text);
+  transition: background var(--dur-fast) var(--ease-out);
+}
+.ov-row:hover {
+  background: rgba(167, 139, 250, 0.12);
+}
+.ov-status {
+  flex-shrink: 0;
+  width: 40px;
+  text-align: center;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 3px 0;
+  border-radius: 6px;
+  color: var(--muted);
+  background: rgba(255, 255, 255, 0.06);
+}
+.ov-status.waiting {
+  color: var(--amber);
+  background: rgba(251, 191, 36, 0.16);
+}
+.ov-status.idle {
+  color: var(--green);
+  background: rgba(74, 222, 128, 0.14);
+}
+.ov-status.busy {
+  color: var(--accent);
+  background: rgba(167, 139, 250, 0.16);
+}
+.ov-name {
+  flex-shrink: 0;
+  max-width: 40%;
+  font-size: 12.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ov-activity {
+  flex: 1;
+  min-width: 0;
+  font-size: 11px;
+  color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ov-go {
+  flex-shrink: 0;
+  color: var(--muted);
+  opacity: 0;
+}
+.ov-row:hover .ov-go {
+  opacity: 1;
+  color: var(--accent);
+}

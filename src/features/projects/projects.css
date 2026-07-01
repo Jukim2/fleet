@@ -1,4 +1,7 @@
 .rail {
+  width: 220px;
+  height: 100%;
+  box-sizing: border-box;
   background: var(--rail);
   border-right: 1px solid var(--border);
   display: flex;
@@ -86,6 +89,23 @@
   100% {
     box-shadow: 0 0 0 0 rgba(251, 191, 36, 0);
   }
+}
+/* amber count badge: how many sessions in this project await your approval */
+.rail-waiting {
+  flex-shrink: 0;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+  font-size: 10px;
+  font-weight: 700;
+  color: #1a1205;
+  background: var(--amber);
+  box-shadow: 0 0 0 0 rgba(251, 191, 36, 0.6);
+  animation: rail-dot-pulse 1.4s ease-out infinite;
 }
 .rail-x {
   background: none;

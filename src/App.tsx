@@ -1,9 +1,12 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import ProjectRail from "./features/projects/ProjectRail";
 import ProjectView from "./features/terminals/ProjectView";
 import CommandPalette from "./features/blocks/CommandPalette";
 import Drawer from "./features/drawer/Drawer";
+import AttentionPeek, { AttentionItem } from "./features/attention/AttentionPeek";
+import OverviewPanel, { OverviewGroup } from "./features/overview/OverviewPanel";
 import SettingsPanel from "./features/settings/SettingsPanel";
 import WebPanel from "./features/web/WebPanel";
 import PlanView from "./features/plan/PlanView";
@@ -16,6 +19,8 @@ import { useFleet } from "./hooks/useFleet";
 export default function App() {
   const f = useFleet();
   const [paletteOpen, setPaletteOpen] = useState(false);
+  const [peekOpen, setPeekOpen] = useState(false);
+  const [overviewOpen, setOverviewOpen] = useState(false);
   const [railOpen, setRailOpen] = useState(true);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [planOpen, setPlanOpen] = useState(false);
@@ -41,6 +46,11 @@ export default function App() {
       if (k === "k") {
         e.preventDefault();
         setPaletteOpen((o) => !o);
+      } else if (k === "j") {
+        e.preventDefault();
+        // ⌘J quick triage peek · ⌘⇧J the full cross-project overview
+        if (e.shiftKey) setOverviewOpen((o) => !o);
+        else setPeekOpen((o) => !o);
       } else if (k === "t" && fl.activeProjectId) {
         e.preventDefault();
         fl.newTerm(fl.activeProjectId, "claude", "Claude");
@@ -75,14 +85,95 @@ export default function App() {
 
   const activeProject = f.config.projects.find((p) => p.id === f.activeProjectId) ?? null;
 
+  // Live sessions across every project, sorted so the ones needing you surface
+  // first (waiting → done/idle → busy). Feeds the ⌘J attention peek.
+  const attentionItems = useMemo<AttentionItem[]>(() => {
+    const rank: Record<string, number> = { waiting: 0, idle: 1, busy: 2 };
+    const nameOf = (pid: string) => f.config.projects.find((p) => p.id === pid)?.name ?? "";
+    return f.config.terminals
+      .map((t) => ({ t, status: f.statuses[t.id] }))
+      .filter((x) => x.status && x.status !== "stopped")
+      .map(({ t, status }) => ({
+        projectId: t.projectId,
+        projectName: nameOf(t.projectId),
+        termId: t.id,
+        title: t.title,
+        status: status!,
+        activity: f.activity[t.id],
+      }))
+      .sort((a, b) => rank[a.status] - rank[b.status]);
+  }, [f.config.terminals, f.config.projects, f.statuses, f.activity]);
+
+  // Every terminal (any status), for the ⌘K palette's cross-project "jump to…".
+  const jumpItems = useMemo<AttentionItem[]>(() => {
+    const nameOf = (pid: string) => f.config.projects.find((p) => p.id === pid)?.name ?? "";
+    return f.config.terminals.map((t) => ({
+      projectId: t.projectId,
+      projectName: nameOf(t.projectId),
+      termId: t.id,
+      title: t.title,
+      status: f.statuses[t.id] ?? "stopped",
+      activity: f.activity[t.id],
+    }));
+  }, [f.config.terminals, f.config.projects, f.statuses, f.activity]);
+
+  // Per-project session groups + plan/board progress for the ⌘⇧J overview.
+  const overviewGroups = useMemo<OverviewGroup[]>(() => {
+    const rank: Record<string, number> = { waiting: 0, idle: 1, busy: 2, stopped: 3 };
+    return f.config.projects.map((p) => {
+      const sessions = f.config.terminals
+        .filter((t) => t.projectId === p.id)
+        .map((t) => ({
+          projectId: p.id,
+          projectName: p.name,
+          termId: t.id,
+          title: t.title,
+          status: f.statuses[t.id] ?? "stopped",
+          activity: f.activity[t.id],
+        }))
+        .sort((a, b) => rank[a.status] - rank[b.status]);
+      const plan = f.config.plans[p.id];
+      const total = plan?.steps.length ?? 0;
+      const done = total ? plan!.steps.filter((s) => plan!.completed?.[s.id]).length : 0;
+      return {
+        projectId: p.id,
+        projectName: p.name,
+        sessions,
+        plan: total > 0 ? { done, total } : undefined,
+        boardRunning: !!f.config.boards[p.id]?.running,
+      };
+    });
+  }, [f.config.projects, f.config.terminals, f.config.plans, f.config.boards, f.statuses, f.activity]);
+
+  const overviewCounts = useMemo(() => {
+    const c = { waiting: 0, busy: 0, idle: 0 };
+    for (const it of attentionItems) {
+      if (it.status === "waiting") c.waiting++;
+      else if (it.status === "busy") c.busy++;
+      else if (it.status === "idle") c.idle++;
+    }
+    return c;
+  }, [attentionItems]);
+
+  // Reflect the number of sessions awaiting approval in the window title (and dock/
+  // taskbar badge where supported) so you know even when Fleet isn't focused.
+  const waitingTotal = attentionItems.filter((i) => i.status === "waiting").length;
+  useEffect(() => {
+    const w = getCurrentWindow();
+    w.setTitle(waitingTotal > 0 ? `Fleet · 승인 대기 ${waitingTotal}` : "Fleet").catch(() => {});
+    const anyW = w as unknown as { setBadgeCount?: (n?: number) => Promise<void> };
+    anyW.setBadgeCount?.(waitingTotal || undefined)?.catch?.(() => {});
+  }, [waitingTotal]);
+
   return (
     <div className={`app ${railOpen ? "rail-open" : ""} ${drawerOpen ? "drawer-open" : ""}`}>
-      {railOpen && (
+      <div className="rail-slot" aria-hidden={!railOpen}>
         <ProjectRail
           projects={f.config.projects}
           activeId={f.activeProjectId}
           liveByProject={f.liveByProject}
           projectStatus={f.projectStatus}
+          waitingByProject={f.waitingByProject}
           sessions={f.sessions}
           sessionsLoading={f.sessionsLoading}
           onSelect={f.selectProject}
@@ -94,9 +185,10 @@ export default function App() {
           onDeleteSession={f.deleteSession}
           openSessionTerm={f.openSessionTerm}
           onOpenSettings={() => setSettingsOpen(true)}
+          onOpenOverview={() => setOverviewOpen(true)}
           onCollapse={() => setRailOpen(false)}
         />
-      )}
+      </div>
       {!railOpen && (
         <button className="edge-toggle left" title="사이드바 열기" onClick={() => setRailOpen(true)}>
           ›
@@ -149,23 +241,25 @@ export default function App() {
         )}
       </main>
 
+      <div className="drawer-slot" aria-hidden={!drawerOpen}>
       <Drawer
         open={drawerOpen}
         onClose={() => setDrawerOpen(false)}
-        projectName={activeProject?.name}
         presets={f.config.presets}
-        overrides={activeProject ? f.config.presetOverrides[activeProject.id] ?? {} : {}}
+        bodies={activeProject ? f.config.presetBodies[activeProject.id] ?? {} : {}}
         presetGen={f.presetGen}
         onRun={(presetId) => activeProject && f.runPreset(activeProject.id, presetId)}
-        onSetPresets={f.setGlobalPresets}
-        onSetOverride={(presetId, ov) =>
-          activeProject && f.setPresetOverride(activeProject.id, presetId, ov)
+        onAddPreset={(name, kind, description, body) =>
+          f.addPreset(name, kind, description, activeProject?.id, body)
         }
-        onAiCreate={(name, kind, description) =>
-          activeProject && f.requestAiPreset(activeProject.id, name, kind, description)
+        onUpdatePreset={(presetId, patch) => f.updatePreset(presetId, patch)}
+        onRemovePreset={(presetId) => f.removePreset(presetId)}
+        onSetBody={(presetId, body) =>
+          activeProject && f.setPresetBody(activeProject.id, presetId, body)
         }
-        onRefill={(presetId) => activeProject && f.refillPreset(activeProject.id, presetId)}
+        onGenerate={(presetId) => activeProject && f.generatePresetBody(activeProject.id, presetId)}
       />
+      </div>
 
       {planOpen && activeProject && (
         <PlanView
@@ -224,6 +318,7 @@ export default function App() {
       {webOpen && (
         <WebPanel
           webTabs={f.config.webTabs}
+          artifacts={f.artifacts}
           onClose={() => setWebOpen(false)}
           onAdd={f.addWebTab}
           onRemove={f.removeWebTab}
@@ -231,15 +326,36 @@ export default function App() {
           onOpenAll={f.openAllWebTabs}
           onSend={f.sendToWebTab}
           onBroadcast={f.broadcastToWebTabs}
+          onOpenArtifact={f.openArtifact}
+          onClearArtifacts={f.clearArtifacts}
         />
       )}
+
+      <AttentionPeek
+        open={peekOpen}
+        items={attentionItems}
+        onJump={f.jumpToTerm}
+        onClose={() => setPeekOpen(false)}
+      />
+
+      <OverviewPanel
+        open={overviewOpen}
+        groups={overviewGroups}
+        counts={overviewCounts}
+        onJump={f.jumpToTerm}
+        onSelectProject={f.selectProject}
+        onClose={() => setOverviewOpen(false)}
+      />
 
       <CommandPalette
         open={paletteOpen}
         presets={f.config.presets}
-        overrides={activeProject ? f.config.presetOverrides[activeProject.id] ?? {} : {}}
+        bodies={activeProject ? f.config.presetBodies[activeProject.id] ?? {} : {}}
+        jumpItems={jumpItems}
+        activeProjectId={f.activeProjectId}
         onClose={() => setPaletteOpen(false)}
         onRun={(presetId) => activeProject && f.runPreset(activeProject.id, presetId)}
+        onJump={f.jumpToTerm}
       />
 
       {settingsOpen && (
@@ -260,9 +376,28 @@ export default function App() {
       {f.toasts.length > 0 && (
         <div className="toast-wrap">
           {f.toasts.map((t) => (
-            <div key={t.id} className={`toast ${t.kind}`}>
+            <div
+              key={t.id}
+              className={`toast ${t.kind} ${t.action ? "clickable" : ""}`}
+              onClick={
+                t.action
+                  ? () => {
+                      f.jumpToTerm(t.action!.projectId, t.action!.termId);
+                      f.dismissToast(t.id);
+                    }
+                  : undefined
+              }
+            >
               <span className="toast-text">{t.text}</span>
-              <button className="toast-x" onClick={() => f.dismissToast(t.id)} title="닫기">
+              {t.action && <span className="toast-go">이동 ›</span>}
+              <button
+                className="toast-x"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  f.dismissToast(t.id);
+                }}
+                title="닫기"
+              >
                 ✕
               </button>
             </div>
