@@ -40,11 +40,13 @@ When adding a Rust command, put it in the concern's module (`pub fn` + `#[tauri:
 - **`src/features/`** — `projects/` (rail), `terminals/` (Terminal, ProjectView, SplitLayout, NewTerminalMenu), `blocks/` (CommandPalette — runs presets + cross-project "jump to terminal"), `attention/` (AttentionPeek, the ⌘J cross-project triage overlay), `overview/` (OverviewPanel, the ⌘⇧J global overview), `drawer/` (Drawer, PresetsPanel), `board/` (QueueBoard), `settings/` (SettingsPanel).
 - **Cross-project triage**: hook events feed non-persisted `activity` (per-terminal live tool line) and clickable toasts (`Toast.action` → `jumpToTerm`). `⌘J` opens AttentionPeek (all live sessions sorted waiting→idle→busy, quick triage); `⌘⇧J` (or the rail ▦ button) opens OverviewPanel (a summon/dismiss mode grouping every project's sessions with plan/board progress — the deep scan, deliberately NOT a resident panel). The rail shows a per-project waiting-count badge and the window title/badge reflects the total awaiting approval.
 
-### Two key invariants to preserve
+### Three key invariants to preserve
 
 1. **Scrollback survives moves.** xterm instances are never recreated when tabs/panes are rearranged — the terminal is an absolutely-positioned overlay that is only repositioned, and layout state references it by `termId`. Don't remount terminals on layout change.
 
 2. **Status comes from hooks, not the screen, once proven.** Two status sources exist: a fallback heuristic in `Terminal.tsx` that scans the xterm viewport for claude's `esc to interrupt` hint, and the authoritative Claude Code hook events. In `useFleet`, once a terminal has produced any hook event (`hookDriven`), the screen-scan heuristic is ignored for it (except a real `pty-exit` → `stopped`). Hooks also distinguish `waiting` (blocked on a permission prompt → OS notification) from `idle` (done). `TermStatus` = `stopped | busy | idle | waiting`.
+
+3. **Exactly one writer to each PTY, and IME belongs to imeBridge.** `imeBridge.ts` owns ALL CJK/IME input by mirroring xterm's hidden textarea into the PTY in real time; it blocks IME keydowns (keyCode 229), composition events, and in-run input events from ever reaching xterm (capture-phase listeners on `term.element`). Never let xterm's CompositionHelper or `_handleAnyTextareaChanges` emit alongside it — two async writers racing the PTY is exactly the historical Korean-corruption bug (자음모음 분리, dropped syllables).
 
 ### Queue board
 Per-project board (`QueueBoard` in `types.ts`): **lanes** are terminals, each holding ordered **tasks** with cross-lane `deps`. A 1-second runner loop in `useFleet` dispatches a lane's head task when its terminal is `idle` and all its deps are `done`, so dep-free lanes run in parallel and dep chains serialize. A task is `done` when its terminal returns to idle after dispatch.
