@@ -1,7 +1,6 @@
 import { useEffect, useRef } from "react";
 import { Terminal as XTerm } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
-import { WebglAddon } from "@xterm/addon-webgl";
 import { listen } from "@tauri-apps/api/event";
 import "@xterm/xterm/css/xterm.css";
 import { resizePty, spawnSession } from "../../api/pty";
@@ -56,18 +55,17 @@ export default function Terminal({
     fitRef.current = fit;
     fit.fit();
 
-    // GPU-accelerated rendering. The default DOM renderer makes typing and
-    // scrolling sluggish and chokes on claude's rapid full-screen TUI redraws;
-    // WebGL offloads cell rendering to the GPU. If the GL context is lost (e.g.
-    // tab backgrounded, driver hiccup) dispose the addon so xterm falls back to
-    // the DOM renderer instead of freezing.
-    try {
-      const webgl = new WebglAddon();
-      webgl.onContextLoss(() => webgl.dispose());
-      term.loadAddon(webgl);
-    } catch {
-      /* WebGL unavailable — keep the DOM renderer */
-    }
+    // Renderer: xterm's default DOM renderer, deliberately NOT the WebGL addon.
+    // WebGL is faster for claude's rapid full-screen redraws, but inside Tauri's
+    // WKWebView its drawing buffer is not color-managed the way the rest of the
+    // (React) UI is: on wide-gamut (P3) displays the compositor doesn't convert
+    // the GL buffer's sRGB values to the display profile, so saturated colors
+    // render with a shifted hue — claude's orange ✻ logo/emoji looked wrong
+    // while identical colors elsewhere in the app looked right. The DOM renderer
+    // draws each cell as ordinary color-managed HTML text, so its hues match the
+    // rest of the UI exactly. The `@xterm/addon-canvas` renderer (also color-
+    // managed) is deprecated and pinned to xterm 5, so it can't replace WebGL
+    // here. Accept the small typing/scroll cost for correct color.
 
     // Claude's TUI enables mouse tracking, so by default xterm forwards wheel
     // events to the app instead of scrolling its own scrollback — the terminal
@@ -82,10 +80,15 @@ export default function Terminal({
       return true;
     });
 
-    // Clipboard: xterm doesn't copy/paste on its own. Wire Ctrl/Cmd+C (copy the
-    // selection — falls through to ^C interrupt when nothing is selected) and
-    // Ctrl/Cmd+V (paste via term.paste so claude's bracketed-paste mode is
-    // respected). Shift variants (Ctrl+Shift+C/V) always copy/paste.
+    // Clipboard: xterm doesn't copy on its own, so wire Ctrl/Cmd+C (copy the
+    // selection — falls through to ^C interrupt when nothing is selected).
+    //
+    // Paste is deliberately NOT intercepted: xterm registers a native `paste`
+    // listener on its hidden textarea and handles bracketed paste itself when
+    // Cmd/Ctrl+V fires a genuine paste event. Reading the clipboard ourselves
+    // via navigator.clipboard.readText() is a *programmatic* read, which on
+    // macOS triggers the system "붙여넣기 허용" confirmation button every time.
+    // Letting the native paste gesture through skips that prompt entirely.
     term.attachCustomKeyEventHandler((e) => {
       if (e.type !== "keydown") return true;
       const mod = e.ctrlKey || e.metaKey;
@@ -96,14 +99,7 @@ export default function Terminal({
         if (sel) navigator.clipboard?.writeText(sel).catch(() => {});
         return false; // handled — don't also send ^C
       }
-      if (key === "v") {
-        navigator.clipboard
-          ?.readText()
-          .then((t) => t && term.paste(t))
-          .catch(() => {});
-        return false;
-      }
-      return true;
+      return true; // Cmd/Ctrl+V → native paste event (no macOS clipboard prompt)
     });
 
     spawnSession(id, cwd, term.cols, term.rows, startup).catch((e) =>
