@@ -54,6 +54,9 @@ import { writePty } from "../../api/pty";
 // 21 HangulMode(한/영), 25 Hanja(한자), 91/93 Meta, 229 IME-processed.
 const RUN_NEUTRAL = new Set([16, 17, 18, 20, 21, 25, 91, 93, 229]);
 
+// Any Hangul: jamo (1100), compat jamo (3130), ext-A (A960), syllables + ext-B (AC00–D7FF).
+const HANGUL = /[ᄀ-ᇿ㄰-㆏ꥠ-꥿가-퟿]/;
+
 export function attachInput(term: XTerm, id: string): () => void {
   const ta = term.textarea!;
   const root = term.element!;
@@ -67,6 +70,11 @@ export function attachInput(term: XTerm, id: string): () => void {
 
   let run = false; // inside an IME run: the textarea holds exactly what we've mirrored
   let sent = ""; // text already mirrored to the PTY during this run
+  // Set when a printable key ends a run: xterm sends that key from its keydown
+  // handler AND the browser leaks it into the (just-cleared) textarea, whose
+  // input event would make xterm's own diff handler send it a SECOND time. We
+  // swallow that one input event.
+  let swallowNextInput = false;
 
   // Send the difference between the textarea and what the PTY already has:
   // DEL the changed tail, then type the new tail. Diff over code points (not
@@ -88,6 +96,7 @@ export function attachInput(term: XTerm, id: string): () => void {
     if (run) return;
     run = true;
     sent = "";
+    swallowNextInput = false; // a real IME keydown supersedes any pending swallow
     // Drop stale residue (e.g. xterm's copy handler parks the selection text
     // in the textarea) so the first diff starts from a clean slate.
     ta.value = "";
@@ -109,6 +118,15 @@ export function attachInput(term: XTerm, id: string): () => void {
       e.stopPropagation(); // xterm must never see IME keydowns (second writer)
       return;
     }
+    // macOS WKWebView quirk: the FIRST keystroke of a composition can arrive
+    // as a plain keydown (real keyCode, `key` = the jamo) — 229 only starts on
+    // the second key. Without this net xterm sends that raw jamo itself and
+    // the first syllable of every run comes out 자음모음 분리.
+    if (!run && !e.ctrlKey && !e.metaKey && !e.altKey && HANGUL.test(e.key)) {
+      startRun();
+      e.stopPropagation();
+      return;
+    }
     if (!run) return;
     if (RUN_NEUTRAL.has(e.keyCode)) return;
     if (e.keyCode === 8 && ta.value.length > 0) {
@@ -120,10 +138,51 @@ export function attachInput(term: XTerm, id: string): () => void {
     // is handled by xterm normally. The run's text is already fully mirrored,
     // so e.g. Enter submits the correct line.
     endRun();
+    // A printable ending key (space, letter, punctuation) is sent by xterm from
+    // this keydown, but also leaks into the textarea endRun() just cleared —
+    // xterm's own input listener would diff ""→" " and send it AGAIN (the Korean
+    // "가  나" double-space; only after an IME run, since that's when we clear the
+    // field). Swallow that leak's input event; the char is already on its way.
+    if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey)
+      swallowNextInput = true;
   };
 
   const onInput = (e: Event) => {
-    if (!run) return; // dictation / emoji panel etc. → xterm's own input path
+    if (swallowNextInput) {
+      // The run-ending printable key leaking into the textarea. xterm already
+      // sent it via keydown; block its diff handler so it isn't doubled. Leave
+      // the char in the textarea — the residue logic below subtracts it from the
+      // next run's first mirror.
+      swallowNextInput = false;
+      e.stopPropagation();
+      return;
+    }
+    if (!run) {
+      // Same WKWebView first-keystroke quirk, second net: if the insertion is
+      // composing or Hangul, claim the run here. The char is already in the
+      // textarea, so start the run WITHOUT clearing it — with sent = "" the
+      // next mirror() sends it. Paste and other non-IME input (dictation,
+      // emoji panel) still flow to xterm's own input path.
+      const ev = e as InputEvent;
+      const ime =
+        ev.inputType !== "insertFromPaste" &&
+        (ev.isComposing || (typeof ev.data === "string" && HANGUL.test(ev.data)));
+      if (!ime) return;
+      run = true;
+      // The textarea can still hold residue that xterm already emitted to the
+      // PTY — e.g. the space that ended the PREVIOUS run: endRun() clears the
+      // textarea, then xterm re-inserts the space and NEVER clears it (its
+      // `_handleAnyTextareaChanges` only diffs, it doesn't reset the field).
+      // Seeding sent="" would make mirror() re-send that leftover space along
+      // with the new syllable → the space lands twice (가  나). Treat the part
+      // before the just-inserted char as already-sent so only the new
+      // insertion is mirrored.
+      const data = typeof ev.data === "string" ? ev.data : "";
+      sent = data && ta.value.endsWith(data)
+        ? ta.value.slice(0, ta.value.length - data.length)
+        : "";
+      dbg("run start (input net)", ev.inputType, JSON.stringify(ev.data), "residue:", JSON.stringify(sent));
+    }
     e.stopPropagation();
     mirror();
   };
@@ -135,11 +194,29 @@ export function attachInput(term: XTerm, id: string): () => void {
     e.stopPropagation(); // keep CompositionHelper dormant on Chromium
   };
 
+  // Paste: own it here too, for the same single-writer reason. Reading
+  // clipboardData inside the genuine paste event is part of the user gesture,
+  // so macOS shows no "붙여넣기 허용" prompt (unlike navigator.clipboard.readText).
+  // We stopPropagation so xterm's own paste handler never runs — otherwise the
+  // pasted text lands in the hidden textarea and the NEXT keystroke's diff
+  // re-sends it (the "타이핑하면 또 붙여넣기" bug). term.paste() routes straight
+  // through onData with claude's bracketed-paste wrapping, never touching the
+  // textarea, so nothing lingers to be resent.
+  const onPaste = (e: ClipboardEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    endRun(); // a paste ends any in-progress IME run and clears the textarea
+    const text = e.clipboardData?.getData("text");
+    dbg("paste", JSON.stringify(text));
+    if (text) term.paste(text);
+  };
+
   root.addEventListener("keydown", onKeyDown, true);
   root.addEventListener("input", onInput, true);
   root.addEventListener("compositionstart", onComposition, true);
   root.addEventListener("compositionupdate", onComposition, true);
   root.addEventListener("compositionend", onComposition, true);
+  root.addEventListener("paste", onPaste, true);
 
   const dataSub = term.onData((d) => {
     dbg("onData", JSON.stringify(d));
@@ -152,6 +229,7 @@ export function attachInput(term: XTerm, id: string): () => void {
     root.removeEventListener("compositionstart", onComposition, true);
     root.removeEventListener("compositionupdate", onComposition, true);
     root.removeEventListener("compositionend", onComposition, true);
+    root.removeEventListener("paste", onPaste, true);
     dataSub.dispose();
   };
 }
