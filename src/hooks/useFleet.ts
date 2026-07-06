@@ -530,7 +530,7 @@ export function useFleet() {
   const renameTerm = (termId: string, title: string) =>
     setConfig((c) => ({
       ...c,
-      terminals: c.terminals.map((t) => (t.id === termId ? { ...t, title } : t)),
+      terminals: c.terminals.map((t) => (t.id === termId ? { ...t, title, renamed: true } : t)),
     }));
   const closeTerm = (projectId: string, termId: string) => {
     killSession(termId);
@@ -1342,6 +1342,29 @@ export function useFleet() {
     }
   };
 
+  // Session auto-title: a terminal still named "Claude n" (never manually
+  // renamed) takes the first prompt of each claude session as its title — the
+  // same summary the resume list shows — so panes read as "what is this
+  // session about". Manual rename (renamed: true) opts a terminal out for good;
+  // intentional titles (lane/worktree/step names) don't match the default
+  // pattern and are only replaced when a NEW session starts in that terminal.
+  const autoTitled = useRef<Record<string, string>>({}); // termId -> sessionId already titled
+  const autoTitle = (termId: string, sessionId: string, prompt: string) => {
+    const text = (prompt || "").replace(/\s+/g, " ").trim();
+    if (!text) return;
+    const term = configRef.current.terminals.find((t) => t.id === termId);
+    if (!term || term.renamed) return;
+    const isDefault = /^Claude(\s*\d+)?$/i.test(term.title.trim());
+    const newSession = !!autoTitled.current[termId] && autoTitled.current[termId] !== sessionId;
+    if (!isDefault && !newSession) return;
+    autoTitled.current[termId] = sessionId;
+    const title = text.length > 40 ? text.slice(0, 40) + "…" : text;
+    setConfig((c) => ({
+      ...c,
+      terminals: c.terminals.map((t) => (t.id === termId ? { ...t, title } : t)),
+    }));
+  };
+
   const onHookEvent = (h: HookEvent) => {
     const { termId, event, notificationType } = h;
     // Remember the claude transcript for this terminal so a finished worktree
@@ -1360,6 +1383,7 @@ export function useFleet() {
         delete n[termId];
         return n;
       });
+      autoTitle(termId, h.sessionId, h.prompt);
     }
 
     let status: TermStatus | null = null;
@@ -1838,6 +1862,7 @@ export function useFleet() {
     generatePresetBody,
     presetGen,
     toasts,
+    pushToast,
     dismissToast,
     addWebTab,
     removeWebTab,

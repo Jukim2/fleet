@@ -1,5 +1,7 @@
 import { Terminal as XTerm } from "@xterm/xterm";
 import { writePty } from "../../api/pty";
+import { typeFilesAsPaths, typePaths } from "./attachFiles";
+import { clipboardPaths } from "../../api/attach";
 
 // Wire a terminal's keyboard input to the PTY.
 //
@@ -187,6 +189,25 @@ export function attachInput(term: XTerm, id: string): () => void {
     mirror();
   };
 
+  // xterm empties the hidden textarea on blur (`_handleTextAreaBlur`:
+  // "Text can safely be removed on blur"), so a run must not survive one —
+  // stale run/sent state after refocus is exactly both macOS Korean bugs:
+  //   • first refocused keystroke arrives as 229 → startRun() no-ops (run
+  //     already true) and the next mirror() diffs the now-empty textarea
+  //     against the OLD run's `sent`, DEL-erasing everything back to the last
+  //     space in claude's line;
+  //   • it arrives as the plain-keydown jamo quirk instead → run is stale-true
+  //     so the `!run` Hangul net is skipped, the keydown reads as run-ending,
+  //     and xterm sends the raw jamo before the composition mirrors the
+  //     composed syllable → 첫 글자 자음모음 분리.
+  // The run's text is already fully mirrored to the PTY, so resetting state is
+  // all that's needed.
+  const onBlur = () => {
+    dbg("blur");
+    endRun();
+    swallowNextInput = false;
+  };
+
   const onComposition = (e: CompositionEvent) => {
     dbg(e.type, JSON.stringify(e.data));
     // Composition can in theory start without a preceding 229 keydown.
@@ -206,9 +227,29 @@ export function attachInput(term: XTerm, id: string): () => void {
     e.preventDefault();
     e.stopPropagation();
     endRun(); // a paste ends any in-progress IME run and clears the textarea
-    const text = e.clipboardData?.getData("text");
-    dbg("paste", JSON.stringify(text));
-    if (text) term.paste(text);
+    const files = Array.from(e.clipboardData?.files ?? []);
+    const text = e.clipboardData?.getData("text") ?? "";
+    dbg("paste", files.length, "files,", JSON.stringify(text.slice(0, 60)));
+    void (async () => {
+      // Files/folders copied in Explorer/Finder: the web event carries bytes at
+      // best (a FOLDER carries nothing at all) — but the OS clipboard has the
+      // REAL paths. Prefer those: no temp copy, and folders just work.
+      if (files.length || !text) {
+        const paths = await clipboardPaths().catch(() => [] as string[]);
+        if (paths.length) {
+          dbg("paste real paths", paths);
+          typePaths(id, paths);
+          return;
+        }
+      }
+      // No OS path (e.g. a screenshot bitmap): save bytes to a temp file and
+      // type that path — claude picks images up by path.
+      if (files.length) {
+        await typeFilesAsPaths(id, files);
+        return;
+      }
+      if (text) term.paste(text);
+    })();
   };
 
   root.addEventListener("keydown", onKeyDown, true);
@@ -217,6 +258,7 @@ export function attachInput(term: XTerm, id: string): () => void {
   root.addEventListener("compositionupdate", onComposition, true);
   root.addEventListener("compositionend", onComposition, true);
   root.addEventListener("paste", onPaste, true);
+  ta.addEventListener("blur", onBlur);
 
   const dataSub = term.onData((d) => {
     dbg("onData", JSON.stringify(d));
@@ -230,6 +272,7 @@ export function attachInput(term: XTerm, id: string): () => void {
     root.removeEventListener("compositionupdate", onComposition, true);
     root.removeEventListener("compositionend", onComposition, true);
     root.removeEventListener("paste", onPaste, true);
+    ta.removeEventListener("blur", onBlur);
     dataSub.dispose();
   };
 }

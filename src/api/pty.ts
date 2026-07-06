@@ -39,4 +39,6 @@ export type HookEvent = {
   /** PreToolUse only: tool about to run + a short detail (file path, command…) */
   toolName: string;
   toolDetail: string;
+  /** UserPromptSubmit only: the submitted prompt (truncated) — used to auto-title panes */
+  prompt: string;
 };

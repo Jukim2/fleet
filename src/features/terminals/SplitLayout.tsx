@@ -1,15 +1,16 @@
-import { useRef } from "react";
+import { useRef, useState } from "react";
 import { LayoutNode, Split, Leaf, Terminal as Term, TermStatus } from "../../types";
 
 type Ctx = {
   focusedPaneId: string | null;
   termsById: Record<string, Term>;
   statuses: Record<string, TermStatus>;
-  canClose: boolean;
   onFocusPane: (id: string) => void;
   onSetRatio: (splitId: string, ratio: number) => void;
   onSplit: (paneId: string, dir: "row" | "col") => void;
   onClosePane: (paneId: string) => void;
+  onCloseTerm: (termId: string) => void;
+  onRenameTerm: (termId: string, title: string) => void;
   onPaneDragStart: (e: React.DragEvent, paneId: string, termId: string) => void;
   onPaneDragEnd: () => void;
 };
@@ -18,17 +19,48 @@ function PaneBox({ leaf, ctx }: { leaf: Leaf; ctx: Ctx }) {
   const term = leaf.termId ? ctx.termsById[leaf.termId] : null;
   const status: TermStatus = leaf.termId ? ctx.statuses[leaf.termId] ?? "stopped" : "stopped";
   const focused = ctx.focusedPaneId === leaf.id;
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState("");
+  const commitRename = () => {
+    if (leaf.termId && draft.trim()) ctx.onRenameTerm(leaf.termId, draft.trim());
+    setEditing(false);
+  };
   return (
     <div className={`pane ${focused ? "focused" : ""}`}>
       <div
         className={`pane-bar ${leaf.termId ? "draggable" : ""}`}
-        draggable={!!leaf.termId}
+        draggable={!!leaf.termId && !editing}
         onMouseDown={() => ctx.onFocusPane(leaf.id)}
         onDragStart={(e) => leaf.termId && ctx.onPaneDragStart(e, leaf.id, leaf.termId)}
         onDragEnd={ctx.onPaneDragEnd}
       >
         <span className={`tdot ${status}`} />
-        <span className="pane-name">{term?.title ?? "터미널"}</span>
+        {editing ? (
+          <input
+            className="pane-edit"
+            autoFocus
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            onMouseDown={(e) => e.stopPropagation()}
+            onBlur={commitRename}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") commitRename();
+              else if (e.key === "Escape") setEditing(false);
+            }}
+          />
+        ) : (
+          <span
+            className="pane-name"
+            title={term ? `${term.title} — 더블클릭해서 이름 바꾸기` : undefined}
+            onDoubleClick={() => {
+              if (!term) return;
+              setDraft(term.title);
+              setEditing(true);
+            }}
+          >
+            {term?.title ?? "터미널"}
+          </span>
+        )}
         <span className="pane-tools">
           <button title="좌우 분할" onClick={() => ctx.onSplit(leaf.id, "row")}>
             ⊞
@@ -36,11 +68,16 @@ function PaneBox({ leaf, ctx }: { leaf: Leaf; ctx: Ctx }) {
           <button title="상하 분할" onClick={() => ctx.onSplit(leaf.id, "col")}>
             ⊟
           </button>
-          {ctx.canClose && (
-            <button title="패널 닫기" onClick={() => ctx.onClosePane(leaf.id)}>
-              ✕
-            </button>
-          )}
+          {/* ✕ kills the session outright (no parking in the 대기 row); an
+              empty leaf (shouldn't exist per the layout invariant) just closes. */}
+          <button
+            title="세션 종료"
+            onClick={() =>
+              leaf.termId ? ctx.onCloseTerm(leaf.termId) : ctx.onClosePane(leaf.id)
+            }
+          >
+            ✕
+          </button>
         </span>
       </div>
       {/* Terminal floats over this body (positioned by ProjectView). */}

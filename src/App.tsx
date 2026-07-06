@@ -33,6 +33,19 @@ export default function App() {
     checkForUpdate().then(setLaunchUpdate).catch(() => {});
   }, []);
 
+  // An OS file dropped outside a pane would make the webview NAVIGATE to the
+  // file (blank window). Panes handle their own drops in the target phase;
+  // this window-level catch just neutralizes the misses.
+  useEffect(() => {
+    const block = (e: DragEvent) => e.preventDefault();
+    window.addEventListener("dragover", block);
+    window.addEventListener("drop", block);
+    return () => {
+      window.removeEventListener("dragover", block);
+      window.removeEventListener("drop", block);
+    };
+  }, []);
+
   // Keep the latest store in a ref so the global key handler stays subscription-stable.
   const fRef = useRef(f);
   fRef.current = f;
@@ -233,6 +246,7 @@ export default function App() {
                 onStatus={f.setStatus}
                 onOpenWeb={() => setWebOpen(true)}
                 onOpenPlan={() => setPlanOpen(true)}
+                onNotice={f.pushToast}
                 presetsOpen={drawerOpen}
                 onTogglePresets={() => setDrawerOpen((o) => !o)}
                 wtActive={f.wtRuns[p.id] ? wtProgress(f.wtRuns[p.id]) : undefined}

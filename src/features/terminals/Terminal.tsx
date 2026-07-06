@@ -83,12 +83,13 @@ export default function Terminal({
     // Clipboard: xterm doesn't copy on its own, so wire Ctrl/Cmd+C (copy the
     // selection — falls through to ^C interrupt when nothing is selected).
     //
-    // Paste is deliberately NOT intercepted: xterm registers a native `paste`
-    // listener on its hidden textarea and handles bracketed paste itself when
-    // Cmd/Ctrl+V fires a genuine paste event. Reading the clipboard ourselves
-    // via navigator.clipboard.readText() is a *programmatic* read, which on
-    // macOS triggers the system "붙여넣기 허용" confirmation button every time.
-    // Letting the native paste gesture through skips that prompt entirely.
+    // Paste must ALWAYS arrive as the native `paste` event (imeBridge owns it:
+    // text, clipboard images, copied files). On macOS Cmd+V isn't an xterm key
+    // so the event fires naturally, but on Windows xterm maps Ctrl+V → \x16
+    // and preventDefaults the keydown — the paste event never fires and images
+    // can't attach. Return false for mod+V so xterm skips it and the browser's
+    // genuine paste gesture goes through everywhere (also avoids macOS's
+    // "붙여넣기 허용" prompt, which only programmatic clipboard reads trigger).
     term.attachCustomKeyEventHandler((e) => {
       if (e.type !== "keydown") return true;
       const mod = e.ctrlKey || e.metaKey;
@@ -99,7 +100,8 @@ export default function Terminal({
         if (sel) navigator.clipboard?.writeText(sel).catch(() => {});
         return false; // handled — don't also send ^C
       }
-      return true; // Cmd/Ctrl+V → native paste event (no macOS clipboard prompt)
+      if (key === "v") return false; // xterm hands-off → native paste event fires
+      return true;
     });
 
     spawnSession(id, cwd, term.cols, term.rows, startup).catch((e) =>

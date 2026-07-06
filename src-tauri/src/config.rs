@@ -3,7 +3,12 @@
 use tauri::{AppHandle, Manager};
 
 pub(crate) fn config_path(app: &AppHandle) -> Result<std::path::PathBuf, String> {
-    let dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
+    // FLEET_CONFIG_DIR overrides the OS dir — lets a second instance run with
+    // an isolated profile (demo/screenshots/dev) without touching the real one.
+    let dir = match std::env::var("FLEET_CONFIG_DIR").ok().filter(|s| !s.is_empty()) {
+        Some(d) => std::path::PathBuf::from(d),
+        None => app.path().app_config_dir().map_err(|e| e.to_string())?,
+    };
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     Ok(dir.join("fleet.json"))
 }

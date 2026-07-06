@@ -44,6 +44,9 @@ struct HookEvent {
     /// command, …), so Fleet can show "what is this session doing right now".
     tool_name: String,
     tool_detail: String,
+    /// UserPromptSubmit only: the submitted prompt (truncated) — Fleet uses the
+    /// first prompt of a session as the pane's auto title.
+    prompt: String,
 }
 
 /// Pull a short human hint out of a tool_input blob (first field that reads well),
@@ -182,7 +185,7 @@ fn handle_hook_conn(mut stream: std::net::TcpStream, app: &AppHandle) {
     if term_id.is_empty() {
         return; // not a Fleet-spawned session
     }
-    let (event, notification_type, session_id, transcript_path, tool_name, tool_detail) =
+    let (event, notification_type, session_id, transcript_path, tool_name, tool_detail, prompt) =
         match serde_json::from_slice::<serde_json::Value>(&body) {
             Ok(v) => (
                 v.get("hook_event_name").and_then(|x| x.as_str()).unwrap_or("").to_string(),
@@ -191,6 +194,10 @@ fn handle_hook_conn(mut stream: std::net::TcpStream, app: &AppHandle) {
                 v.get("transcript_path").and_then(|x| x.as_str()).unwrap_or("").to_string(),
                 v.get("tool_name").and_then(|x| x.as_str()).unwrap_or("").to_string(),
                 v.get("tool_input").map(tool_detail).unwrap_or_default(),
+                v.get("prompt")
+                    .and_then(|x| x.as_str())
+                    .map(|s| s.trim().chars().take(200).collect())
+                    .unwrap_or_default(),
             ),
             Err(_) => Default::default(),
         };
@@ -204,6 +211,7 @@ fn handle_hook_conn(mut stream: std::net::TcpStream, app: &AppHandle) {
             transcript_path,
             tool_name,
             tool_detail,
+            prompt,
         },
     );
 }

@@ -17,6 +17,8 @@ export type Terminal = {
   /** working directory; defaults to the project path. Worktree-run sessions set
    *  this to their git worktree directory. */
   cwd?: string;
+  /** true once the user renames it manually — blocks session auto-titling */
+  renamed?: boolean;
 };
 
 /** A reusable prompt block. */

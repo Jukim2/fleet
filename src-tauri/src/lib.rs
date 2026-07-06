@@ -11,6 +11,7 @@
 //
 // Shared state (`pty::Sessions`, `bridge::WebQueue`) is managed in `run()`;
 // each Tauri command lives in its concern's module and is registered below.
+mod attach;
 mod bridge;
 mod cdp;
 mod config;
@@ -52,6 +53,8 @@ pub fn run() {
             pty::resize_pty,
             pty::kill_session,
             pty::list_sessions,
+            attach::save_attachment,
+            attach::clipboard_paths,
             sessions::list_claude_sessions,
             sessions::delete_claude_session,
             sessions::import_session_transcript,

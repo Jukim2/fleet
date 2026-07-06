@@ -5,6 +5,7 @@ import SplitLayout, { SplitCtx } from "./SplitLayout";
 import { LayoutNode, Project, Terminal as Term, TermStatus } from "../../types";
 import { leaves } from "../../lib/layout";
 import { openPath } from "../../api/system";
+import { typeFilesAsPaths } from "./attachFiles";
 import "./terminals.css";
 
 type Rect = { left: number; top: number; width: number; height: number };
@@ -57,6 +58,7 @@ export default function ProjectView({
   onStatus,
   onOpenWeb,
   onOpenPlan,
+  onNotice,
   presetsOpen,
   onTogglePresets,
   wtActive,
@@ -82,6 +84,7 @@ export default function ProjectView({
   onStatus: (id: string, status: TermStatus) => void;
   onOpenWeb: () => void;
   onOpenPlan: () => void;
+  onNotice: (kind: "ok" | "err" | "info", text: string) => void;
   presetsOpen: boolean;
   onTogglePresets: () => void;
   wtActive?: { done: number; total: number; active: number; error: number };
@@ -92,8 +95,9 @@ export default function ProjectView({
   const [dragging, setDragging] = useState(false);
   const [dragTermId, setDragTermId] = useState<string | null>(null);
   const [hint, setHint] = useState<{ rect: Rect; zone: Zone } | null>(null);
-  const [editing, setEditing] = useState<string | null>(null);
-  const [draft, setDraft] = useState("");
+  // termId currently hovered by an OS file drag (Explorer/Finder) — shows the
+  // "drop to attach as path" overlay on that pane.
+  const [fileHover, setFileHover] = useState<string | null>(null);
   const termsById = Object.fromEntries(terminals.map((t) => [t.id, t]));
   const layoutLeaves = layout ? leaves(layout) : [];
   // Tabs that exist but aren't in any pane — candidates to fill the vacated side
@@ -136,15 +140,6 @@ export default function ProjectView({
   const focusByTerm = (termId: string) => {
     const leaf = layoutLeaves.find((l) => l.termId === termId);
     if (leaf) onFocusPane(leaf.id);
-  };
-
-  const startRename = (termId: string, current: string) => {
-    setEditing(termId);
-    setDraft(current);
-  };
-  const commitRename = () => {
-    if (editing && draft.trim()) onRenameTerm(editing, draft.trim());
-    setEditing(null);
   };
 
   const paneAt = (clientX: number, clientY: number) => {
@@ -235,11 +230,12 @@ export default function ProjectView({
     focusedPaneId,
     termsById,
     statuses,
-    canClose: layoutLeaves.length > 1,
     onFocusPane,
     onSetRatio,
     onSplit,
     onClosePane,
+    onCloseTerm,
+    onRenameTerm,
     onPaneDragStart,
     onPaneDragEnd,
   };
@@ -283,69 +279,52 @@ export default function ProjectView({
         </div>
       </header>
 
-      <div className="tabs">
-        {terminals.map((t) => (
-          <div
-            key={t.id}
-            className={`tab ${rectForTerm(t.id) ? "shown" : ""}`}
-            draggable={editing !== t.id}
-            onClick={() => onActivateTerm(t.id)}
-            onDragStart={(e) => {
-              e.dataTransfer.setData("text/term", t.id);
-              e.dataTransfer.effectAllowed = "move";
-              setDragging(true);
-              setDragTermId(t.id);
-            }}
-            onDragEnd={() => {
-              setDragging(false);
-              setDragTermId(null);
-              setHint(null);
-            }}
-            onDragOver={(e) => e.preventDefault()}
-            onDrop={(e) => {
-              e.preventDefault();
-              const from = e.dataTransfer.getData("text/term");
-              if (from && from !== t.id) onReorderTerms(from, t.id);
-            }}
-          >
-            <span className={`tdot ${statuses[t.id] ?? "stopped"}`} />
-            {editing === t.id ? (
-              <input
-                className="tab-edit"
-                autoFocus
-                value={draft}
-                onChange={(e) => setDraft(e.target.value)}
-                onClick={(e) => e.stopPropagation()}
-                onBlur={commitRename}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") commitRename();
-                  else if (e.key === "Escape") setEditing(null);
-                }}
-              />
-            ) : (
-              <span
-                className="tab-title"
-                onDoubleClick={(e) => {
-                  e.stopPropagation();
-                  startRename(t.id, t.title);
-                }}
-              >
-                {t.title}
-              </span>
-            )}
-            <button
-              className="tab-x"
-              title="터미널 닫기"
-              onClick={(e) => {
-                e.stopPropagation();
-                onCloseTerm(t.id);
+      {/* Only sessions not placed in any pane appear here — panes themselves are
+          the tabs/handles now. The row vanishes when everything is on screen. */}
+      {unshownTerminals.length > 0 && (
+        <div className="tabs">
+          <span className="tabs-label">대기 세션</span>
+          {unshownTerminals.map((t) => (
+            <div
+              key={t.id}
+              className="tab"
+              title={`${t.title} — 클릭해서 패널에 열기, 드래그해서 배치`}
+              draggable
+              onClick={() => onActivateTerm(t.id)}
+              onDragStart={(e) => {
+                e.dataTransfer.setData("text/term", t.id);
+                e.dataTransfer.effectAllowed = "move";
+                setDragging(true);
+                setDragTermId(t.id);
+              }}
+              onDragEnd={() => {
+                setDragging(false);
+                setDragTermId(null);
+                setHint(null);
+              }}
+              onDragOver={(e) => e.preventDefault()}
+              onDrop={(e) => {
+                e.preventDefault();
+                const from = e.dataTransfer.getData("text/term");
+                if (from && from !== t.id) onReorderTerms(from, t.id);
               }}
             >
-              ✕
-            </button>
-          </div>
-        ))}
-      </div>
+              <span className={`tdot ${statuses[t.id] ?? "stopped"}`} />
+              <span className="tab-title">{t.title}</span>
+              <button
+                className="tab-x"
+                title="터미널 닫기"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onCloseTerm(t.id);
+                }}
+              >
+                ✕
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
 
       <div className="stage" ref={stageRef}>
         {layout ? (
@@ -370,6 +349,45 @@ export default function ProjectView({
                   : { display: "none" }
               }
               onMouseDown={() => focusByTerm(t.id)}
+              // OS file drag → attach as path. Internal tab/pane drags never get
+              // here (the drop-catcher covers the stage while `dragging`), and
+              // the "Files" type guard keeps this inert for anything else.
+              onDragOver={(e) => {
+                if (!e.dataTransfer.types.includes("Files")) return;
+                e.preventDefault();
+                e.dataTransfer.dropEffect = "copy";
+                if (fileHover !== t.id) setFileHover(t.id);
+              }}
+              onDragLeave={(e) => {
+                // Ignore leaves into our own children (xterm's internals).
+                if (e.currentTarget.contains(e.relatedTarget as Node | null)) return;
+                setFileHover((h) => (h === t.id ? null : h));
+              }}
+              onDrop={(e) => {
+                if (!e.dataTransfer.files.length) return;
+                e.preventDefault();
+                setFileHover(null);
+                focusByTerm(t.id);
+                // A dropped FOLDER exposes no path and no bytes to the webview
+                // (dragDropEnabled is off) — only copy→paste can carry its real
+                // path. Attach the plain files, explain the folders.
+                const files: File[] = [];
+                let dirs = 0;
+                for (const it of Array.from(e.dataTransfer.items)) {
+                  if (it.webkitGetAsEntry?.()?.isDirectory) {
+                    dirs++;
+                    continue;
+                  }
+                  const file = it.getAsFile();
+                  if (file) files.push(file);
+                }
+                if (dirs > 0)
+                  onNotice(
+                    "info",
+                    "폴더는 드래그로 경로를 읽을 수 없어요 — 폴더를 복사(Ctrl+C)한 뒤 터미널에 붙여넣기(Ctrl+V)하면 실제 경로가 입력돼요",
+                  );
+                if (files.length) void typeFilesAsPaths(t.id, files);
+              }}
             >
               <Terminal
                 id={t.id}
@@ -378,6 +396,9 @@ export default function ProjectView({
                 visible={shown}
                 onStatus={onStatus}
               />
+              {fileHover === t.id && (
+                <div className="file-drop-hint">놓으면 파일 경로가 입력돼요</div>
+              )}
             </div>
           );
         })}
