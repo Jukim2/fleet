@@ -213,17 +213,82 @@ export default function ProjectView({
     else onSplitWithTerm(at.hit.paneId, "col", false, termId);
   };
 
-  const onPaneDragStart = (e: React.DragEvent, paneId: string, termId: string) => {
-    e.dataTransfer.setData("text/term", termId);
-    e.dataTransfer.setData("text/pane", paneId);
-    e.dataTransfer.effectAllowed = "move";
-    setDragging(true);
-    setDragTermId(termId);
-  };
-  const onPaneDragEnd = () => {
-    setDragging(false);
-    setDragTermId(null);
-    setHint(null);
+  // Pointer-driven pane-bar drag (native HTML5 drag won't start from a pane bar
+  // in WebView2). We compute the hovered pane + zone ourselves and reuse the
+  // same move/split handlers the HTML5 chip drop uses.
+  const onPanePointerDown = (e: React.MouseEvent, paneId: string, termId: string) => {
+    const startX = e.clientX;
+    const startY = e.clientY;
+    // Snapshot what we need — layout can't change mid-drag.
+    const shownPanes = panes;
+    const fillTerm = unshownTerminals[0];
+    let started = false;
+
+    const paneAtClient = (cx: number, cy: number) => {
+      const stage = stageRef.current;
+      if (!stage) return null;
+      const base = stage.getBoundingClientRect();
+      const x = cx - base.left;
+      const y = cy - base.top;
+      const hit = shownPanes.find(
+        (p) =>
+          x >= p.rect.left &&
+          x <= p.rect.left + p.rect.width &&
+          y >= p.rect.top &&
+          y <= p.rect.top + p.rect.height,
+      );
+      return hit ? { hit, x, y } : null;
+    };
+
+    const move = (ev: MouseEvent) => {
+      if (!started) {
+        if (Math.abs(ev.clientX - startX) + Math.abs(ev.clientY - startY) < 5) return;
+        started = true;
+        setDragging(true);
+        setDragTermId(termId);
+        document.body.classList.add("dragging-pane");
+      }
+      const at = paneAtClient(ev.clientX, ev.clientY);
+      if (!at) {
+        setHint(null);
+        return;
+      }
+      const zone = zoneOf(at.hit.rect, at.x, at.y);
+      // Dropping onto its OWN pane only splits, and only if a free tab can fill
+      // the vacated side.
+      if (at.hit.termId === termId && (zone === "center" || !fillTerm)) {
+        setHint(null);
+        return;
+      }
+      setHint({ rect: hintRect(at.hit.rect, zone), zone });
+    };
+
+    const up = (ev: MouseEvent) => {
+      window.removeEventListener("mousemove", move);
+      window.removeEventListener("mouseup", up);
+      document.body.classList.remove("dragging-pane");
+      setDragging(false);
+      setDragTermId(null);
+      setHint(null);
+      if (!started) return; // a plain click, not a drag
+      const at = paneAtClient(ev.clientX, ev.clientY);
+      if (!at) return;
+      const zone = zoneOf(at.hit.rect, at.x, at.y);
+      // Own pane → split, filling the vacated side with a free (unshown) tab.
+      if (at.hit.termId === termId) {
+        if (!fillTerm || zone === "center") return;
+        if (zone === "left") onSplitWithTerm(at.hit.paneId, "row", false, fillTerm.id);
+        else if (zone === "right") onSplitWithTerm(at.hit.paneId, "row", true, fillTerm.id);
+        else if (zone === "top") onSplitWithTerm(at.hit.paneId, "col", false, fillTerm.id);
+        else onSplitWithTerm(at.hit.paneId, "col", true, fillTerm.id);
+        return;
+      }
+      // Another pane → dock the whole pane there (VS Code-style).
+      onMovePane(paneId, at.hit.paneId, zone);
+    };
+
+    window.addEventListener("mousemove", move);
+    window.addEventListener("mouseup", up);
   };
 
   const ctx: SplitCtx = {
@@ -236,8 +301,7 @@ export default function ProjectView({
     onClosePane,
     onCloseTerm,
     onRenameTerm,
-    onPaneDragStart,
-    onPaneDragEnd,
+    onPanePointerDown,
   };
 
   return (

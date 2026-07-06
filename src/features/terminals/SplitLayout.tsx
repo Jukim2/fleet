@@ -11,8 +11,9 @@ type Ctx = {
   onClosePane: (paneId: string) => void;
   onCloseTerm: (termId: string) => void;
   onRenameTerm: (termId: string, title: string) => void;
-  onPaneDragStart: (e: React.DragEvent, paneId: string, termId: string) => void;
-  onPaneDragEnd: () => void;
+  // Pointer-based pane-bar drag. Native HTML5 drag doesn't reliably start from
+  // a pane bar in WebView2, so we drive the drag ourselves from mousedown.
+  onPanePointerDown: (e: React.MouseEvent, paneId: string, termId: string) => void;
 };
 
 function PaneBox({ leaf, ctx }: { leaf: Leaf; ctx: Ctx }) {
@@ -29,10 +30,13 @@ function PaneBox({ leaf, ctx }: { leaf: Leaf; ctx: Ctx }) {
     <div className={`pane ${focused ? "focused" : ""}`}>
       <div
         className={`pane-bar ${leaf.termId ? "draggable" : ""}`}
-        draggable={!!leaf.termId && !editing}
-        onMouseDown={() => ctx.onFocusPane(leaf.id)}
-        onDragStart={(e) => leaf.termId && ctx.onPaneDragStart(e, leaf.id, leaf.termId)}
-        onDragEnd={ctx.onPaneDragEnd}
+        onMouseDown={(e) => {
+          if (editing || e.button !== 0) return;
+          ctx.onFocusPane(leaf.id);
+          // Don't hijack the tool buttons or the rename input.
+          if ((e.target as HTMLElement).closest("button, .pane-edit")) return;
+          if (leaf.termId) ctx.onPanePointerDown(e, leaf.id, leaf.termId);
+        }}
       >
         <span className={`tdot ${status}`} />
         {editing ? (
@@ -68,6 +72,13 @@ function PaneBox({ leaf, ctx }: { leaf: Leaf; ctx: Ctx }) {
           <button title="상하 분할" onClick={() => ctx.onSplit(leaf.id, "col")}>
             ⊟
           </button>
+          {/* Park: remove from the layout but keep the session alive — it drops
+              back into the 대기 세션 row. */}
+          {leaf.termId && (
+            <button title="대기 세션으로 보내기 (세션 유지)" onClick={() => ctx.onClosePane(leaf.id)}>
+              ⤓
+            </button>
+          )}
           {/* ✕ kills the session outright (no parking in the 대기 row); an
               empty leaf (shouldn't exist per the layout invariant) just closes. */}
           <button

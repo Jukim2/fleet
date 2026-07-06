@@ -284,6 +284,13 @@ export default function App() {
           terminals={f.config.terminals.filter((t) => t.projectId === activeProject.id)}
           planning={f.planning === activeProject.id}
           onRequestPlan={(goal) => f.requestPlan(activeProject.id, goal)}
+          notes={f.config.notes[activeProject.id] ?? []}
+          onAddNote={(text) => f.addNote(activeProject.id, text)}
+          onEditNote={(id, text) => f.editNote(activeProject.id, id, text)}
+          onRemoveNote={(id) => f.removeNote(activeProject.id, id)}
+          onPlanFromNotes={(ids) => f.planFromNotes(activeProject.id, ids)}
+          notesUi={{ open: f.config.planNotesOpen ?? true, width: f.config.planNotesW ?? 340 }}
+          onSetNotesUi={f.setPlanNotesUi}
           onRunSteps={(stepIds, target) => f.runSteps(activeProject.id, stepIds, target)}
           onToggleCollapse={(nodeId, current) => f.toggleCollapsed(activeProject.id, nodeId, current)}
           onRemovePlan={() => f.removePlan(activeProject.id)}

@@ -261,6 +261,9 @@ body.resizing .divider {
   flex-shrink: 0;
   position: relative;
   z-index: 6; /* keep split/close buttons above the floating terminal (z 5) */
+  /* Without this the title text starts a native text-selection on press, which
+     pre-empts the HTML5 element drag — the bar wouldn't "grab" to rearrange. */
+  user-select: none;
 }
 .pane-bar.draggable {
   cursor: grab;
@@ -288,6 +291,7 @@ body.resizing .divider {
   font-size: 12px;
   padding: 1px 5px;
   outline: none;
+  user-select: text; /* the bar disables selection; the rename field needs it back */
 }
 .pane-tools {
   display: flex;
@@ -336,6 +340,19 @@ body.resizing .divider {
   z-index: 5;
   overflow: hidden;
   background: #101014;
+  /* Apple-style glide when panes move/swap/split/resize: the float slides to
+     its new measured rect while the (dark) pane frame reflows instantly behind
+     it. overflow:hidden + the 90ms refit debounce (Terminal.tsx) keep the
+     terminal from reflowing mid-glide — it just clips against the matching bg.
+     Skipped while dragging a divider so resize tracks the cursor 1:1. */
+  transition:
+    left var(--dur) var(--ease-out),
+    top var(--dur) var(--ease-out),
+    width var(--dur) var(--ease-out),
+    height var(--dur) var(--ease-out);
+}
+body.resizing .term-float {
+  transition: none;
 }
 .term-host {
   height: 100%;
@@ -365,6 +382,15 @@ body.resizing .divider {
   inset: 0;
   z-index: 50;
   background: rgba(167, 139, 250, 0.04);
+}
+/* Pointer-driven pane-bar drag in progress: kill text selection everywhere and
+   show the grabbing cursor over the whole window. */
+body.dragging-pane {
+  cursor: grabbing;
+  user-select: none;
+}
+body.dragging-pane .drop-catcher {
+  cursor: grabbing;
 }
 .drop-hint {
   position: absolute;

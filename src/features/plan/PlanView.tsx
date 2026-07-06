@@ -1,5 +1,6 @@
 import { CSSProperties, useEffect, useMemo, useRef, useState } from "react";
 import {
+  Note,
   Plan,
   PlanDir,
   PlanFeature,
@@ -12,6 +13,7 @@ import {
   Terminal,
   TermStatus,
 } from "../../types";
+import NotesPanel from "./NotesPanel";
 import { gitIsRepo } from "../../api/git";
 import { openPath } from "../../api/system";
 import { laneLiveTerm } from "../../lib/board";
@@ -56,6 +58,13 @@ export default function PlanView({
   terminals,
   planning,
   onRequestPlan,
+  notes,
+  onAddNote,
+  onEditNote,
+  onRemoveNote,
+  onPlanFromNotes,
+  notesUi,
+  onSetNotesUi,
   onRunSteps,
   onToggleCollapse,
   onRemovePlan,
@@ -119,6 +128,13 @@ export default function PlanView({
   cardScale: number;
   onSetCardScale: (scale: number) => void;
   onRequestPlan: (goal: string) => void;
+  notes: Note[];
+  onAddNote: (text: string) => void;
+  onEditNote: (id: string, text: string) => void;
+  onRemoveNote: (id: string) => void;
+  onPlanFromNotes: (ids: string[]) => void;
+  notesUi: { open: boolean; width: number };
+  onSetNotesUi: (ui: { open: boolean; width: number }) => void;
   onRunSteps: (stepIds: string[], target: RunTarget) => void;
   onToggleCollapse: (nodeId: string, current: boolean) => void;
   onRemovePlan: () => void;
@@ -134,6 +150,33 @@ export default function PlanView({
 }) {
   const [goal, setGoal] = useState("");
   const [goalOpen, setGoalOpen] = useState(false); // header "＋ AI로 추가" popover
+  // right memo sidebar: collapsible + width-resizable, persisted in config.
+  const [notesOpen, setNotesOpen] = useState(notesUi.open);
+  const [notesW, setNotesW] = useState(notesUi.width);
+  const notesWRef = useRef(notesW);
+  notesWRef.current = notesW;
+  // persist sidebar prefs (debounced) so they survive reopen
+  useEffect(() => {
+    const t = window.setTimeout(() => onSetNotesUi({ open: notesOpen, width: notesW }), 300);
+    return () => window.clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [notesOpen, notesW]);
+  // drag the sidebar's left edge to resize (drag left = wider)
+  const startNotesResize = (e: React.MouseEvent) => {
+    e.preventDefault();
+    const sx = e.clientX;
+    const sw = notesWRef.current;
+    const move = (ev: MouseEvent) =>
+      setNotesW(Math.max(240, Math.min(680, sw - (ev.clientX - sx))));
+    const up = () => {
+      window.removeEventListener("mousemove", move);
+      window.removeEventListener("mouseup", up);
+      document.body.classList.remove("resizing");
+    };
+    document.body.classList.add("resizing");
+    window.addEventListener("mousemove", move);
+    window.addEventListener("mouseup", up);
+  };
   const [sel, setSel] = useState<Set<string>>(new Set());
   const [runOpen, setRunOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null); // inline title rename
@@ -761,7 +804,7 @@ export default function PlanView({
           </div>
         )}
 
-        {/* Body: outline (목차) + graph canvas */}
+        {/* Body: outline (목차) + graph canvas + memo sidebar (right) */}
         <div className="plan-body">
           {hasGraph && (plan?.themes.length ?? 0) > 0 && (
             <aside className="plan-toc" onMouseDown={(e) => e.stopPropagation()}>
@@ -1199,7 +1242,48 @@ export default function PlanView({
               </button>
             </div>
           )}
+
+          {/* collapsed handle: a slim tab on the graph's right edge */}
+          {!notesOpen && (
+            <button
+              className="plan-memo-tab"
+              onMouseDown={(e) => e.stopPropagation()}
+              onClick={() => setNotesOpen(true)}
+              title="메모 열기"
+            >
+              메모{notes.length > 0 ? ` ${notes.length}` : ""}
+            </button>
+          )}
         </div>
+
+        {/* Memo sidebar (right, collapsible + width-resizable) */}
+        {notesOpen && (
+          <aside
+            className="plan-memo"
+            style={{ width: notesW }}
+            onMouseDown={(e) => e.stopPropagation()}
+          >
+            <div className="plan-memo-resize" onMouseDown={startNotesResize} title="드래그해서 너비 조절" />
+            <div className="plan-memo-head">
+              <span className="plan-memo-title">메모{notes.length > 0 ? ` ${notes.length}` : ""}</span>
+              <button
+                className="plan-memo-collapse"
+                onClick={() => setNotesOpen(false)}
+                title="사이드바 접기"
+              >
+                ⇥
+              </button>
+            </div>
+            <NotesPanel
+              notes={notes}
+              planning={planning}
+              onAdd={onAddNote}
+              onEdit={onEditNote}
+              onRemove={onRemoveNote}
+              onPlanFromNotes={onPlanFromNotes}
+            />
+          </aside>
+        )}
         </div>
 
         {/* Selection action bar */}

@@ -65,6 +65,19 @@ export type WebArtifact = {
 };
 
 /**
+ * A free-form project memo. Notes are a scratchpad for rough ideas; selected
+ * notes can be handed to the planner AI to be refined + merged into the plan.
+ * `addedAt` marks a note that has already been fed into the plan (so the UI can
+ * dim it and avoid duplicate adds); the note itself is kept.
+ */
+export type Note = {
+  id: string;
+  text: string;
+  createdAt: number;
+  addedAt?: number;
+};
+
+/**
  * A plan is ONE persistent, evolving graph per project — not a per-request list.
  * Three levels: theme (큰 주제, e.g. "UI 개선") → feature (기능) → step (단계).
  * New requests are decomposed and MERGED into this graph: matching themes are
@@ -169,6 +182,8 @@ export type FleetConfig = {
   webTabs: WebTab[];
   /** projectId -> auto-generated plan */
   plans: Record<string, Plan>;
+  /** projectId -> free-form memos (fed into the planner AI on demand) */
+  notes: Record<string, Note[]>;
   /** plan-graph step card size multiplier (1 = default); persisted */
   planCardScale?: number;
   /** per-project plan-graph viewport (pan + zoom), so it survives reopen */
@@ -180,6 +195,9 @@ export type FleetConfig = {
   planDir?: PlanDir;
   /** plan-graph sibling ordering: "added" | "title" (default added) */
   planSort?: PlanSort;
+  /** plan-graph memo sidebar: open state + width (px), persisted */
+  planNotesOpen?: boolean;
+  planNotesW?: number;
 };
 
 /** Saved plan-graph viewport: translate (x,y) + zoom (k). */
@@ -225,5 +243,6 @@ export const emptyConfig: FleetConfig = {
   boards: {},
   webTabs: [],
   plans: {},
+  notes: {},
   planCardScale: 1,
 };

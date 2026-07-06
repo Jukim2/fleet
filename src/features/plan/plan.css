@@ -339,6 +339,246 @@
   background: var(--bg);
   overflow: hidden;
 }
+
+/* ---- Memo sidebar (right of the graph, collapsible + width-resizable) ---- */
+.plan-memo {
+  position: relative;
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  border-left: 1px solid var(--border);
+  background: var(--bg);
+  overflow: hidden;
+}
+/* left-edge drag handle to resize the sidebar width */
+.plan-memo-resize {
+  position: absolute;
+  left: -3px;
+  top: 0;
+  bottom: 0;
+  width: 7px;
+  cursor: col-resize;
+  z-index: 3;
+}
+.plan-memo-resize:hover,
+body.resizing .plan-memo-resize {
+  background: var(--accent);
+  opacity: 0.4;
+}
+.plan-memo-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 8px 8px 12px;
+  border-bottom: 1px solid var(--border);
+}
+.plan-memo-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+.plan-memo-collapse {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 7px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1;
+  transition: color var(--dur-fast) var(--ease-out), border-color var(--dur-fast) var(--ease-out),
+    background var(--dur-fast) var(--ease-out);
+}
+.plan-memo-collapse:hover {
+  color: var(--text);
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 14%, var(--surface));
+}
+/* collapsed handle: slim tab pinned to the graph's right edge */
+.plan-memo-tab {
+  position: absolute;
+  top: 12px;
+  right: 0;
+  z-index: 20;
+  border: 1px solid var(--border);
+  border-right: none;
+  border-radius: 8px 0 0 8px;
+  background: var(--surface);
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+  padding: 8px 10px;
+  writing-mode: vertical-rl;
+  box-shadow: -4px 0 14px rgba(0, 0, 0, 0.28);
+}
+.plan-memo-tab:hover {
+  color: var(--text);
+  border-color: var(--accent);
+}
+
+/* ---- Memo panel (list) ---- */
+.plan-notes {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.plan-notes-add {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px;
+  border-bottom: 1px solid var(--border);
+}
+.plan-notes-in {
+  width: 100%;
+  min-height: 52px;
+  resize: vertical;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  font-family: inherit;
+  font-size: 12px;
+  padding: 7px 9px;
+  outline: none;
+  transition: border-color var(--dur-fast) var(--ease-out);
+}
+.plan-notes-in:focus {
+  border-color: var(--accent);
+}
+.plan-notes-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.plan-notes-empty {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.6;
+  padding: 6px 4px;
+}
+.plan-notes-empty b {
+  color: var(--text);
+}
+.plan-note-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 8px 9px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  transition: border-color var(--dur-fast) var(--ease-out),
+    background var(--dur-fast) var(--ease-out), opacity var(--dur-fast) var(--ease-out);
+}
+.plan-note-item:hover {
+  border-color: color-mix(in srgb, var(--accent) 50%, var(--border));
+}
+.plan-note-item.sel {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, var(--surface));
+}
+.plan-note-item.added {
+  opacity: 0.6;
+}
+.plan-note-check {
+  flex: none;
+  margin-top: 1px;
+  width: 17px;
+  height: 17px;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 5px;
+  border: 1.5px solid color-mix(in srgb, var(--text) 30%, transparent);
+  background: transparent;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease-out), border-color var(--dur-fast) var(--ease-out);
+}
+.plan-note-check:hover {
+  border-color: var(--accent);
+}
+.plan-note-check.on {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+.plan-note-text {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text);
+  white-space: pre-wrap;
+  word-break: break-word;
+  cursor: pointer;
+}
+.plan-note-edit {
+  flex: 1;
+  min-width: 0;
+  min-height: 44px;
+  resize: vertical;
+  background: var(--bg);
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  color: var(--text);
+  font-family: inherit;
+  font-size: 12px;
+  padding: 5px 7px;
+  outline: none;
+}
+.plan-note-badge {
+  flex: none;
+  align-self: center;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--green);
+  white-space: nowrap;
+}
+.plan-note-del {
+  flex: none;
+  background: none;
+  border: none;
+  color: var(--muted);
+  font-size: 12px;
+  padding: 0 2px;
+  opacity: 0.5;
+  transition: opacity var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
+}
+.plan-note-del:hover {
+  opacity: 1;
+  color: #ef4444;
+}
+.plan-notes-foot {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px;
+  border-top: 1px solid var(--border);
+}
+.plan-notes-selinfo {
+  font-size: 12px;
+  color: var(--muted);
+}
+.plan-notes-foot .btn {
+  flex: 1;
+  min-width: 0;
+}
 .plan-toc-all {
   display: flex;
   align-items: center;

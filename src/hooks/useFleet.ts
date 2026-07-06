@@ -52,6 +52,7 @@ import {
   normalize,
   removeLeaf,
   setLeafTerm,
+  setLeafTermsRaw,
   setRatio,
   splitLeafWith,
   splitLeafWithSide,
@@ -63,6 +64,7 @@ import {
   Project,
   Lane,
   LaneTarget,
+  Note,
   Plan,
   PlanDir,
   PlanSort,
@@ -354,7 +356,7 @@ export function useFleet() {
       const { presets, presetBodies } = migratePresets(c);
       const plans: Record<string, Plan> = {};
       for (const [pid, p] of Object.entries(c.plans ?? {})) plans[pid] = normalizePlan(p);
-      setConfig({ ...c, layouts, boards, presets, presetBodies, plans });
+      setConfig({ ...c, layouts, boards, presets, presetBodies, plans, notes: c.notes ?? {} });
       setFocusedPane(focus);
       const first = c.projects[0]?.id ?? null;
       setActiveProjectId(first);
@@ -632,19 +634,22 @@ export function useFleet() {
     if (sourcePaneId === targetPaneId) return;
     patchLayout(projectId, (n) => {
       if (!n) return n;
-      const src = leaves(n).find((l) => l.id === sourcePaneId);
+      const ls = leaves(n);
+      const src = ls.find((l) => l.id === sourcePaneId);
       if (!src?.termId) return n;
       const termId = src.termId;
-      let next: LayoutNode;
+      // Center → swap the two panes' terminals (reorder in place). Never evict
+      // the target to the waiting row — both panes stay on screen.
       if (zone === "center") {
-        next = setLeafTerm(n, targetPaneId, termId);
-      } else {
-        const dir = zone === "left" || zone === "right" ? "row" : "col";
-        const before = zone === "left" || zone === "top";
-        next = splitLeafWithSide(n, targetPaneId, dir, before, newLeaf(termId));
+        const tgt = ls.find((l) => l.id === targetPaneId);
+        return setLeafTermsRaw(n, { [sourcePaneId]: tgt?.termId ?? null, [targetPaneId]: termId });
       }
-      // The dedup in setLeafTerm/splitLeafWithSide already emptied the source leaf;
-      // drop it so its sibling collapses up instead of leaving a blank pane.
+      // Edge → split-insert the dragged pane on that side of the target; the
+      // dedup in splitLeafWithSide empties the source leaf, so drop it and let
+      // its sibling collapse up (no blank pane).
+      const dir = zone === "left" || zone === "right" ? "row" : "col";
+      const before = zone === "left" || zone === "top";
+      const next = splitLeafWithSide(n, targetPaneId, dir, before, newLeaf(termId));
       return removeLeaf(next, sourcePaneId) ?? next;
     });
     setFocusedPane((fp) => ({ ...fp, [projectId]: targetPaneId }));
@@ -1096,6 +1101,42 @@ export function useFleet() {
     }, 2000);
   };
 
+  // --- project memos (scratchpad → planner AI) ---
+  const notesOf = (projectId: string): Note[] => configRef.current.notes[projectId] ?? [];
+  const patchNotes = (projectId: string, fn: (ns: Note[]) => Note[]) =>
+    setConfig((c) => ({ ...c, notes: { ...c.notes, [projectId]: fn(c.notes[projectId] ?? []) } }));
+  const addNote = (projectId: string, text: string) => {
+    const t = text.trim();
+    if (!t) return;
+    patchNotes(projectId, (ns) => [...ns, { id: uid(), text: t, createdAt: Date.now() }]);
+  };
+  const editNote = (projectId: string, noteId: string, text: string) => {
+    const t = text.trim();
+    if (!t) return patchNotes(projectId, (ns) => ns.filter((n) => n.id !== noteId));
+    patchNotes(projectId, (ns) => ns.map((n) => (n.id === noteId ? { ...n, text: t } : n)));
+  };
+  const removeNote = (projectId: string, noteId: string) =>
+    patchNotes(projectId, (ns) => ns.filter((n) => n.id !== noteId));
+  const markNotesAdded = (projectId: string, noteIds: string[]) => {
+    const set = new Set(noteIds);
+    patchNotes(projectId, (ns) =>
+      ns.map((n) => (set.has(n.id) ? { ...n, addedAt: n.addedAt ?? Date.now() } : n)),
+    );
+  };
+  /** Hand selected memos to the planner AI: join them into one goal, decompose
+   *  it into the graph (reusing requestPlan), and mark them as added. */
+  const planFromNotes = (projectId: string, noteIds: string[]) => {
+    const set = new Set(noteIds);
+    const picked = notesOf(projectId).filter((n) => set.has(n.id));
+    if (!picked.length) return;
+    const goal = [
+      "다음은 이 프로젝트에 대한 메모입니다. 내용을 정리하고 구체화해서 실행 가능한 계획으로 만드세요:",
+      ...picked.map((n) => `- ${n.text.replace(/\s+/g, " ").trim()}`),
+    ].join("\n");
+    requestPlan(projectId, goal);
+    markNotesAdded(projectId, noteIds);
+  };
+
   /** Run a selection of plan steps. Worktree mode → the git pipeline runner;
    *  otherwise project them onto the board engine. */
   const runSteps = (projectId: string, stepIds: string[], target: RunTarget) => {
@@ -1282,6 +1323,10 @@ export function useFleet() {
   /** Plan-graph flow direction + sibling order (persisted, applies to all plans). */
   const setPlanDir = (dir: PlanDir) => setConfig((c) => ({ ...c, planDir: dir }));
   const setPlanSort = (sort: PlanSort) => setConfig((c) => ({ ...c, planSort: sort }));
+
+  /** Plan-graph memo sidebar open/width (persisted, applies to all plans). */
+  const setPlanNotesUi = (ui: { open: boolean; width: number }) =>
+    setConfig((c) => ({ ...c, planNotesOpen: ui.open, planNotesW: ui.width }));
 
   /** The fix request handed to Claude, tailored to how the final merge got stuck. */
   const finalizeFixPrompt = (fix: WtFix): string => {
@@ -1877,6 +1922,10 @@ export function useFleet() {
     planning,
     requestPlan,
     loadPlan,
+    addNote,
+    editNote,
+    removeNote,
+    planFromNotes,
     runSteps,
     stopBoardRun,
     toggleCollapsed,
@@ -1899,6 +1948,7 @@ export function useFleet() {
     setPlanFocus,
     setPlanDir,
     setPlanSort,
+    setPlanNotesUi,
     stopWtRun,
     clearWtMsg,
     showWtStep,

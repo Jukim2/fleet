@@ -28,6 +28,20 @@ export function setLeafTerm(node: LayoutNode, leafId: string, termId: string | n
   return { ...node, a: setLeafTerm(node.a, leafId, termId), b: setLeafTerm(node.b, leafId, termId) };
 }
 
+/**
+ * Assign termIds to leaves by id, RAW (no dedup). Used to swap two panes'
+ * terminals in one pass — dedup would clear one side mid-swap.
+ */
+export function setLeafTermsRaw(
+  node: LayoutNode,
+  map: Record<string, string | null>,
+): LayoutNode {
+  if (node.kind === "leaf") {
+    return node.id in map ? { ...node, termId: map[node.id] } : node;
+  }
+  return { ...node, a: setLeafTermsRaw(node.a, map), b: setLeafTermsRaw(node.b, map) };
+}
+
 export function setRatio(node: LayoutNode, splitId: string, ratio: number): LayoutNode {
   if (node.kind === "leaf") return node;
   if (node.id === splitId) return { ...node, ratio: Math.min(0.85, Math.max(0.15, ratio)) };
