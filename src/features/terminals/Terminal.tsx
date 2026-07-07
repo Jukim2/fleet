@@ -28,6 +28,7 @@ export default function Terminal({
   const hostRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<XTerm | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
+  const imeRef = useRef<{ dispose: () => void; reset: () => void } | null>(null);
   const scanTimer = useRef<number | undefined>(undefined);
 
   useEffect(() => {
@@ -129,7 +130,8 @@ export default function Terminal({
     };
 
     // Keyboard input → PTY, including CJK/IME composition. See imeBridge.ts.
-    const detachInput = attachInput(term, id);
+    const ime = attachInput(term, id);
+    imeRef.current = ime;
 
     const unlistenOut = listen<PtyOutput>("pty-output", (e) => {
       if (e.payload.id !== id) return;
@@ -164,7 +166,8 @@ export default function Terminal({
     return () => {
       if (scanTimer.current) window.clearTimeout(scanTimer.current);
       if (rzTimer) window.clearTimeout(rzTimer);
-      detachInput();
+      imeRef.current = null;
+      ime.dispose();
       unlistenOut.then((f) => f());
       unlistenExit.then((f) => f());
       ro.disconnect();
@@ -175,7 +178,13 @@ export default function Terminal({
 
   // Refit + focus when this tab becomes visible (xterm sized 0 while hidden).
   useEffect(() => {
-    if (!visible) return;
+    if (!visible) {
+      // Hidden by a project/tab switch (display:none). WebView2 doesn't reliably
+      // blur the textarea then, so clear any in-progress IME run explicitly —
+      // otherwise a stale run on return double-writes the first Hangul syllable.
+      imeRef.current?.reset();
+      return;
+    }
     const t = window.setTimeout(() => {
       try {
         fitRef.current?.fit();

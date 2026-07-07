@@ -49,7 +49,13 @@ import { clipboardPaths } from "../../api/attach";
 // resulting input event mirrors the erasure — letting xterm also send \x7f
 // would double-delete.
 //
-// Returns a disposer that detaches every listener.
+// Returns { dispose, reset }: `dispose` detaches every listener; `reset` clears
+// any in-progress IME run (same as a blur) — the host calls it when the terminal
+// is hidden, because a project switch hides the pane with `display:none` and
+// WebView2 does NOT reliably fire the textarea `blur` in that case. Without it
+// the run state survives the switch: on return the first Hangul keystroke sees a
+// stale run, xterm's own composition path wakes up alongside our mirror, and the
+// syllable is written twice (한 번 눌러도 여러 번 입력되는 버그).
 
 // Keys that never end an IME run: modifiers and IME mode keys.
 // 16 Shift, 17 Ctrl, 18 Alt, 20 CapsLock (한/영 on remapped mac keyboards),
@@ -59,7 +65,7 @@ const RUN_NEUTRAL = new Set([16, 17, 18, 20, 21, 25, 91, 93, 229]);
 // Any Hangul: jamo (1100), compat jamo (3130), ext-A (A960), syllables + ext-B (AC00–D7FF).
 const HANGUL = /[ᄀ-ᇿ㄰-㆏ꥠ-꥿가-퟿]/;
 
-export function attachInput(term: XTerm, id: string): () => void {
+export function attachInput(term: XTerm, id: string): { dispose: () => void; reset: () => void } {
   const ta = term.textarea!;
   const root = term.element!;
 
@@ -202,10 +208,16 @@ export function attachInput(term: XTerm, id: string): () => void {
   //     composed syllable → 첫 글자 자음모음 분리.
   // The run's text is already fully mirrored to the PTY, so resetting state is
   // all that's needed.
-  const onBlur = () => {
-    dbg("blur");
+  // Clear any in-progress run and pending swallow. Called on blur AND explicitly
+  // by the host when the terminal is hidden (see the return-value doc above).
+  const reset = () => {
     endRun();
     swallowNextInput = false;
+  };
+
+  const onBlur = () => {
+    dbg("blur");
+    reset();
   };
 
   const onComposition = (e: CompositionEvent) => {
@@ -265,7 +277,7 @@ export function attachInput(term: XTerm, id: string): () => void {
     writePty(id, d);
   });
 
-  return () => {
+  const dispose = () => {
     root.removeEventListener("keydown", onKeyDown, true);
     root.removeEventListener("input", onInput, true);
     root.removeEventListener("compositionstart", onComposition, true);
@@ -275,4 +287,6 @@ export function attachInput(term: XTerm, id: string): () => void {
     ta.removeEventListener("blur", onBlur);
     dataSub.dispose();
   };
+
+  return { dispose, reset };
 }
