@@ -11,6 +11,7 @@ import OverviewPanel, { OverviewGroup } from "./features/overview/OverviewPanel"
 import SettingsPanel from "./features/settings/SettingsPanel";
 import WebPanel from "./features/web/WebPanel";
 import PlanView from "./features/plan/PlanView";
+import LiveView from "./features/plan/LiveView";
 import "./features/presets/presets.css";
 import { ensureHookInstalled } from "./api/pty";
 import { wtProgress } from "./lib/worktree";
@@ -25,6 +26,10 @@ export default function App() {
   const [railOpen, setRailOpen] = useState(true);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [planOpen, setPlanOpen] = useState(false);
+  // Top-level view switch: the terminal main view vs. the cross-project live
+  // command center (was a tab inside the per-project plan overlay — promoted
+  // here since it's global and shares the same rail as the main view).
+  const [liveView, setLiveView] = useState(false);
   const [webOpen, setWebOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [launchUpdate, setLaunchUpdate] = useState<UpdateAvailable | null>(null);
@@ -179,6 +184,33 @@ export default function App() {
     anyW.setBadgeCount?.(waitingTotal || undefined)?.catch?.(() => {});
   }, [waitingTotal]);
 
+  // Cross-project live command center props — shared by the top-level live view.
+  const liveProps = {
+    projects: f.config.projects,
+    terminals: f.config.terminals,
+    statuses: f.statuses,
+    activity: f.activity,
+    liveTool: f.liveTool,
+    manifests: f.toolManifests,
+    liveCanvas: f.config.liveCanvas,
+    onPlaceFrames: f.placeLiveFrames,
+    onRemoveFrame: f.removeLiveFrame,
+    onMoveNode: f.moveLiveNode,
+    onSetCanvasView: f.setLiveCanvasView,
+    onSetSideW: f.setLiveSideW,
+    focusPid: f.activeProjectId,
+    onNewSession: (pid: string) => f.wakeTerm(f.newTerm(pid, "claude", "Claude")),
+    onNewShell: (pid: string) => f.wakeTerm(f.newTerm(pid, "", "셸")),
+    onWakeTerm: f.wakeTerm,
+    onResumeSession: f.resumeInto,
+    onCloseTerm: f.closeTerm,
+    onJumpTerm: (pid: string, tid: string) => {
+      f.jumpToTerm(pid, tid);
+      setLiveView(false);
+    },
+    onDismissLiveTool: f.dismissLiveTool,
+  };
+
   return (
     <div className={`app ${railOpen ? "rail-open" : ""} ${drawerOpen ? "drawer-open" : ""}`}>
       <div className="rail-slot" aria-hidden={!railOpen}>
@@ -210,6 +242,28 @@ export default function App() {
       )}
 
       <main className="stage-wrap">
+        {f.config.projects.length > 0 && (
+          <div className="stage-viewtabs" role="tablist" aria-label="뷰 전환">
+            <button
+              className={`stage-viewtab ${!liveView ? "on" : ""}`}
+              role="tab"
+              aria-selected={!liveView}
+              onClick={() => setLiveView(false)}
+              title="터미널 메인 뷰"
+            >
+              메인
+            </button>
+            <button
+              className={`stage-viewtab ${liveView ? "on" : ""}`}
+              role="tab"
+              aria-selected={liveView}
+              onClick={() => setLiveView(true)}
+              title="전 프로젝트의 실시간 claude 세션·툴을 한눈에"
+            >
+              라이브
+            </button>
+          </div>
+        )}
         {f.config.projects.length === 0 ? (
           <div className="welcome">
             <h1>Fleet</h1>
@@ -217,6 +271,10 @@ export default function App() {
             <button className="primary" onClick={pickFolder}>
               ＋ 폴더 추가
             </button>
+          </div>
+        ) : liveView ? (
+          <div className="live-stage">
+            <LiveView {...liveProps} />
           </div>
         ) : (
           f.config.projects
@@ -342,30 +400,6 @@ export default function App() {
           onStopBoardRun={() => f.stopBoardRun(activeProject.id)}
           onClearWtLastRun={() => f.clearWtLastRun(activeProject.id)}
           onClearWtMsg={() => f.clearWtMsg(activeProject.id)}
-          live={{
-            projects: f.config.projects,
-            terminals: f.config.terminals,
-            statuses: f.statuses,
-            activity: f.activity,
-            liveTool: f.liveTool,
-            manifests: f.toolManifests,
-            liveCanvas: f.config.liveCanvas,
-            onPlaceFrames: f.placeLiveFrames,
-            onRemoveFrame: f.removeLiveFrame,
-            onMoveNode: f.moveLiveNode,
-            onSetCanvasView: f.setLiveCanvasView,
-            onSetSideW: f.setLiveSideW,
-            onNewSession: (pid) => f.wakeTerm(f.newTerm(pid, "claude", "Claude")),
-            onNewShell: (pid) => f.wakeTerm(f.newTerm(pid, "", "셸")),
-            onWakeTerm: f.wakeTerm,
-            onResumeSession: f.resumeInto,
-            onCloseTerm: f.closeTerm,
-            onJumpTerm: (pid, tid) => {
-              f.jumpToTerm(pid, tid);
-              setPlanOpen(false);
-            },
-            onDismissLiveTool: f.dismissLiveTool,
-          }}
           onClose={() => setPlanOpen(false)}
         />
       )}

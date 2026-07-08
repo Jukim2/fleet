@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
-import { listClaudeSessions } from "../../api/claude";
 import { listToolOutputs, ToolFile } from "../../api/tools";
 import { openPath } from "../../api/system";
 import {
@@ -30,6 +29,8 @@ export type LiveProps = {
   onMoveNode: (termId: string, rect: LiveRect) => void;
   onSetCanvasView: (view: PlanViewport) => void;
   onSetSideW: (w: number) => void;
+  /** 메인 레일에서 선택한 프로젝트 — 캔버스에서 해당 프레임을 배치·중앙 정렬한다 */
+  focusPid?: string | null;
   onNewSession: (projectId: string) => void;
   /** 새 셸 세션(순수 터미널) 열기 */
   onNewShell: (projectId: string) => void;
@@ -74,11 +75,6 @@ const FRAME_MIN_H = 150;
 const MIN_K = 0.3;
 const MAX_K = 2.2;
 const clampK = (k: number) => Math.min(MAX_K, Math.max(MIN_K, k));
-// left sidebar width (user-draggable, persisted)
-const SIDE_MIN = 150;
-const SIDE_MAX = 400;
-const SIDE_DEFAULT = 180;
-const clampSide = (w: number) => Math.min(SIDE_MAX, Math.max(SIDE_MIN, w));
 
 const fmtElapsed = (ms: number) => {
   const s = Math.max(0, Math.floor(ms / 1000));
@@ -92,29 +88,11 @@ type Pos = { x: number; y: number };
  * 라이브 커맨드센터 캔버스. 프로젝트가 점선 프레임(큰 틀)으로 놓이고, 그 안에
  * 살아있는 claude 세션 노드(상시 입력창 포함)와 툴 노드가 들어간다. 프레임·세션
  * 노드는 드래그로 배치하고 우하단 핸들로 크기를 조절하며, 배치·크기·뷰포트는 모두
- * 저장된다. 왼쪽 목록에서 프로젝트를 캔버스로 꺼내오거나 다시 넣어둔다.
+ * 저장된다. 메인 레일에서 프로젝트를 클릭하면 캔버스로 올라오고, 프레임 헤더 ✕로 다시 내린다.
  */
 export default function LiveView(p: LiveProps) {
   const { projects, terminals, statuses, liveTool, manifests, liveCanvas } = p;
 
-  /** 사이드바 하단 세션 목록이 따라가는 선택된 프로젝트 (메인 화면의 프로젝트 선택과 동일 개념) */
-  const [selectedPid, setSelectedPid] = useState<string | null>(null);
-  /** 사이드바 가로폭 (드래그로 조절, liveCanvas.sideW에 저장) */
-  const [sideW, setSideW] = useState<number>(() => clampSide(liveCanvas?.sideW ?? SIDE_DEFAULT));
-  const startSideDrag = (e: React.MouseEvent) => {
-    if (e.button !== 0) return;
-    e.preventDefault();
-    const sx = e.clientX;
-    const base = sideW;
-    const move = (ev: MouseEvent) => setSideW(clampSide(base + (ev.clientX - sx)));
-    const up = (ev: MouseEvent) => {
-      window.removeEventListener("mousemove", move);
-      window.removeEventListener("mouseup", up);
-      p.onSetSideW(clampSide(base + (ev.clientX - sx)));
-    };
-    window.addEventListener("mousemove", move);
-    window.addEventListener("mouseup", up);
-  };
   // 1s tick for elapsed clocks
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
@@ -154,40 +132,6 @@ export default function LiveView(p: LiveProps) {
   const storedFrames = liveCanvas?.frames;
   const placedIds = projects.filter((pr) => storedFrames?.[pr.id]).map((pr) => pr.id);
   const placedKey = placedIds.join("|");
-
-  /** 사이드바 하단이 실제로 보여줄 프로젝트: 명시 선택 → 첫 배치 → 첫 프로젝트 */
-  const effectivePid =
-    (selectedPid && projects.some((pr) => pr.id === selectedPid) && selectedPid) ||
-    placedIds[0] ||
-    projects[0]?.id ||
-    null;
-
-  // ---- 기존 세션: resumable past conversations (dormant tabs live in the sidebar) ----
-  /** past claude conversations per placed project (lazy-fetched, cached) */
-  const [resumes, setResumes] = useState<Record<string, ClaudeSession[]>>({});
-  useEffect(() => {
-    // fetch for every placed project + the sidebar-selected one (may be unplaced)
-    const need = [...placedIds, ...(effectivePid ? [effectivePid] : [])];
-    for (const pid of need) {
-      if (resumes[pid]) continue;
-      const proj = projects.find((x) => x.id === pid);
-      if (!proj) continue;
-      listClaudeSessions(proj.path)
-        .then((list) => setResumes((r) => ({ ...r, [pid]: list })))
-        .catch(() => setResumes((r) => ({ ...r, [pid]: [] })));
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [placedKey, effectivePid]);
-  /** resume rows, minus conversations already open as a terminal tab */
-  const resumeRowsOf = (pid: string) => {
-    const open = new Set(
-      terminals
-        .filter((t) => t.projectId === pid)
-        .map((t) => /--resume (\S+)/.exec(t.startup)?.[1])
-        .filter(Boolean),
-    );
-    return (resumes[pid] ?? []).filter((s) => !open.has(s.id));
-  };
 
   const initRef = useRef(false);
   useEffect(() => {
@@ -402,153 +346,48 @@ export default function LiveView(p: LiveProps) {
     const c = toWorld((r?.left ?? 0) + (r?.width ?? 800) / 2, (r?.top ?? 0) + (r?.height ?? 500) / 2);
     p.onPlaceFrames({ [pid]: { x: c.x - 200, y: c.y - 120 } });
   };
-  // sidebar ◉/○ toggle: put a project's frame on the canvas or take it back
-  const togglePlace = (pid: string) => {
-    if (storedFrames?.[pid]) p.onRemoveFrame(pid);
-    else ensurePlaced(pid);
-  };
-  // sidebar list actions: bring a session onto the canvas as a node
-  const openSession = (pid: string, termId: string) => {
-    ensurePlaced(pid);
-    p.onWakeTerm(termId);
-  };
-  const resumeSession = (pid: string, s: ClaudeSession) => {
-    ensurePlaced(pid);
-    p.onResumeSession(pid, s);
+  // pan the viewport so a placed project's frame sits centered (keeps zoom)
+  const centerFrame = (pid: string) => {
+    const r = canvasRef.current?.getBoundingClientRect();
+    const rect = frameRect(pid);
+    if (!r || !rect) return;
+    const g = frameGeom(pid);
+    const k = viewRef.current.k;
+    setView({ k, x: r.width / 2 - (rect.x + g.w / 2) * k, y: r.height / 2 - (rect.y + g.h / 2) * k });
   };
 
-  // ---- sidebar bottom: sessions of the selected project (main-view style) ----
-  const selProj = projects.find((pr) => pr.id === effectivePid) ?? null;
-  const selTerms = selProj
-    ? terminals
-        .filter((t) => t.projectId === selProj.id)
-        .sort((a, b) => {
-          // live first, then dormant; stable-ish by title
-          const la = statuses[a.id] && statuses[a.id] !== "stopped" ? 0 : 1;
-          const lb = statuses[b.id] && statuses[b.id] !== "stopped" ? 0 : 1;
-          return la - lb;
-        })
-    : [];
-  const selResumes = selProj ? resumeRowsOf(selProj.id) : [];
+  // The main rail (shared with the main view) drives the canvas now — there's no
+  // in-canvas project shelf. Selecting a project places its frame and pans to it.
+  // Skip the initial value so entering the live view keeps the saved viewport;
+  // placement round-trips through config, so defer centering to when the frame
+  // actually appears (tracked via pendingCenter + the placedKey effect).
+  const { focusPid } = p;
+  const firstFocus = useRef(true);
+  const pendingCenter = useRef<string | null>(null);
+  useEffect(() => {
+    if (firstFocus.current) {
+      firstFocus.current = false;
+      return;
+    }
+    if (!focusPid) return;
+    if (storedFrames?.[focusPid]) centerFrame(focusPid);
+    else {
+      pendingCenter.current = focusPid;
+      ensurePlaced(focusPid);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusPid]);
+  useEffect(() => {
+    const pid = pendingCenter.current;
+    if (pid && storedFrames?.[pid]) {
+      pendingCenter.current = null;
+      centerFrame(pid);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [placedKey]);
 
   return (
     <div className="lv2">
-      {/* ---- left shelf: projects (top) + selected project's sessions (bottom),
-              mirroring the main view's project→session layout ---- */}
-      <aside
-        className="lv2-side"
-        style={{ flexBasis: sideW, width: sideW }}
-        onMouseDown={(e) => e.stopPropagation()}
-      >
-        <div className="lv2-side-title">프로젝트</div>
-        <div className="lv2-side-list">
-          {projects.map((pr) => {
-            const placed = !!storedFrames?.[pr.id];
-            const liveN = (liveTermsOf[pr.id] ?? []).length;
-            const sel = pr.id === effectivePid;
-            return (
-              <div
-                key={pr.id}
-                className={`lv2-side-item ${sel ? "sel" : ""} ${placed ? "on" : ""}`}
-                onClick={() => {
-                  setSelectedPid(pr.id);
-                  ensurePlaced(pr.id);
-                }}
-                title="클릭해서 선택 (하단에 세션 목록)"
-              >
-                <span className="lv2-side-name">{pr.name}</span>
-                {liveN > 0 && <span className="lv2-side-live">{liveN}</span>}
-                <button
-                  className="lv2-side-mark"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    togglePlace(pr.id);
-                  }}
-                  title={placed ? "캔버스에서 빼기" : "캔버스로 꺼내오기"}
-                >
-                  {placed ? "◉" : "○"}
-                </button>
-              </div>
-            );
-          })}
-        </div>
-
-        {/* ---- selected project's sessions: live + dormant + resumable ---- */}
-        {selProj && (
-          <div className="lv2-side-sess">
-            <div className="lv2-side-sess-head">
-              <span className="lv2-side-sess-title">{selProj.name} · 세션</span>
-              <button
-                className="lv2-side-new"
-                onClick={() => p.onNewSession(selProj.id)}
-                title="새 claude 세션"
-              >
-                ＋ 세션
-              </button>
-              <button
-                className="lv2-side-new"
-                onClick={() => p.onNewShell(selProj.id)}
-                title="새 셸(순수 터미널)"
-              >
-                ＋ 셸
-              </button>
-            </div>
-            <div className="lv2-side-sess-list">
-              {selTerms.length === 0 && selResumes.length === 0 && (
-                <div className="lv2-side-sess-empty">세션 없음 — ＋로 시작</div>
-              )}
-              {selTerms.map((t) => {
-                const st = statuses[t.id];
-                const live = st && st !== "stopped";
-                const shell = isShellTerm(t);
-                return (
-                  <div className="lv2-sess" key={t.id}>
-                    <button
-                      className="lv2-sess-main"
-                      onClick={() => openSession(selProj.id, t.id)}
-                      title={live ? "캔버스에서 보기" : "불러오기 — 캔버스에 띄우기"}
-                    >
-                      <span className={`lv-dot ${live ? st : "stopped"}`} />
-                      <span className="lv2-sess-name">{t.title}</span>
-                      <span className={`lv2-sess-kind ${shell ? "shell" : "claude"}`}>
-                        {shell ? "셸" : "claude"}
-                      </span>
-                      <span className="lv2-sess-act">{live ? "보기" : "불러오기"}</span>
-                    </button>
-                    <button
-                      className="lv2-sess-x"
-                      onClick={() => p.onCloseTerm(selProj.id, t.id)}
-                      title="세션 닫기 (터미널 탭 삭제)"
-                    >
-                      ✕
-                    </button>
-                  </div>
-                );
-              })}
-              {selResumes.map((s) => (
-                <div className="lv2-sess" key={s.id}>
-                  <button
-                    className="lv2-sess-main"
-                    onClick={() => resumeSession(selProj.id, s)}
-                    title={`이어하기 — 이 대화를 새 세션으로 재개\n${s.summary}`}
-                  >
-                    <span className="lv2-sess-resume">↺</span>
-                    <span className="lv2-sess-name">{s.summary || "(빈 대화)"}</span>
-                    <span className="lv2-sess-act">이어하기</span>
-                  </button>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-
-        <div
-          className="lv2-side-resize"
-          onMouseDown={startSideDrag}
-          title="드래그해서 사이드바 너비 조절"
-        />
-      </aside>
-
       {/* ---- canvas ---- */}
       <div
         className={`lv2-canvas ${panning ? "panning" : ""}`}
@@ -599,7 +438,7 @@ export default function LiveView(p: LiveProps) {
                     className="lv2-frame-btn x"
                     onMouseDown={(e) => e.stopPropagation()}
                     onClick={() => p.onRemoveFrame(pid)}
-                    title="캔버스에서 빼기 (왼쪽 목록으로)"
+                    title="이 프레임을 캔버스에서 내리기"
                   >
                     ✕
                   </button>
@@ -695,7 +534,7 @@ export default function LiveView(p: LiveProps) {
 
           {placedIds.length === 0 && (
             <div className="lv2-hint" style={{ left: 60, top: 60 }}>
-              왼쪽 목록에서 프로젝트를 클릭해 캔버스로 꺼내오세요.
+              왼쪽 사이드바에서 프로젝트를 클릭하면 이 캔버스에 올라와요.
             </div>
           )}
         </div>

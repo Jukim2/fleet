@@ -198,6 +198,50 @@ a {
   position: relative;
   overflow: hidden;
 }
+/* Top-level view switch (메인 ↔ 라이브) — floating segmented control, top-center */
+.stage-viewtabs {
+  position: absolute;
+  top: 9px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 20;
+  display: flex;
+  gap: 2px;
+  padding: 3px;
+  background: color-mix(in srgb, var(--bg) 78%, transparent);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.28);
+}
+.stage-viewtab {
+  border: none;
+  background: none;
+  color: var(--muted);
+  font-size: 12.5px;
+  padding: 4px 15px;
+  border-radius: 7px;
+  cursor: pointer;
+  transition:
+    background var(--dur-fast) var(--ease-out),
+    color var(--dur-fast) var(--ease-out);
+}
+.stage-viewtab:hover {
+  color: var(--text);
+}
+.stage-viewtab.on {
+  background: var(--surface);
+  color: var(--text);
+  font-weight: 600;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.3);
+}
+/* Live command center rendered directly in the stage (no longer a plan tab) */
+.live-stage {
+  position: absolute;
+  inset: 0;
+  display: flex;
+}
 .welcome {
   position: absolute;
   inset: 0;
