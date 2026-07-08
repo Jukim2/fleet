@@ -314,11 +314,25 @@ export default function LiveView(p: LiveProps) {
     e.stopPropagation();
   };
 
+  // pan+zoom so a world-space bounding box sits centered with padding
+  const fitToBounds = (minX: number, minY: number, maxX: number, maxY: number) => {
+    const r = canvasRef.current?.getBoundingClientRect();
+    if (!r) return;
+    const pad = 48;
+    const k = clampK(
+      Math.min((r.width - pad) / (maxX - minX || 1), (r.height - pad) / (maxY - minY || 1), 1.2),
+    );
+    setView({
+      k,
+      x: (r.width - (maxX - minX) * k) / 2 - minX * k,
+      y: (r.height - (maxY - minY) * k) / 2 - minY * k,
+    });
+  };
+
   // fit all placed frames into view
   const fitView = () => {
-    const r = canvasRef.current?.getBoundingClientRect();
     const placed = Object.keys(storedFrames ?? {});
-    if (!r || placed.length === 0) return;
+    if (placed.length === 0) return;
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
     for (const pid of placed) {
       const rect = frameRect(pid)!;
@@ -328,14 +342,57 @@ export default function LiveView(p: LiveProps) {
       maxX = Math.max(maxX, rect.x + g.w);
       maxY = Math.max(maxY, rect.y + g.h);
     }
-    const pad = 48;
-    const k = clampK(
-      Math.min((r.width - pad) / (maxX - minX || 1), (r.height - pad) / (maxY - minY || 1), 1.2),
-    );
-    setView({
-      k,
-      x: (r.width - (maxX - minX) * k) / 2 - minX * k,
-      y: (r.height - (maxY - minY) * k) / 2 - minY * k,
+    fitToBounds(minX, minY, maxX, maxY);
+  };
+
+  // ---- 정렬 (auto-arrange) ----
+  const ARRANGE_GAP = 40;
+  // 프로젝트간 정렬: 배치된 프레임들을 프로젝트 순서대로 좌상단부터 격자로 재배치.
+  const arrangeFrames = () => {
+    const ordered = projects.filter((pr) => storedFrames?.[pr.id]).map((pr) => pr.id);
+    if (ordered.length === 0) return;
+    const cols = Math.ceil(Math.sqrt(ordered.length));
+    const next: Record<string, LiveRect> = {};
+    let x = 40, y = 40, rowH = 0;
+    let maxX = 40, maxY = 40;
+    ordered.forEach((pid, i) => {
+      const g = frameGeom(pid);
+      const st = storedFrames?.[pid];
+      next[pid] = { x, y, w: st?.w, h: st?.h }; // keep any user-resized w/h
+      maxX = Math.max(maxX, x + g.w);
+      maxY = Math.max(maxY, y + g.h);
+      rowH = Math.max(rowH, g.h);
+      if ((i + 1) % cols === 0) {
+        x = 40;
+        y += rowH + ARRANGE_GAP;
+        rowH = 0;
+      } else {
+        x += g.w + ARRANGE_GAP;
+      }
+    });
+    p.onPlaceFrames(next);
+    fitToBounds(40, 40, maxX, maxY); // we know the arranged bounds — fit now
+  };
+
+  // 프로젝트 내부 정렬: 한 프레임의 세션 노드를 격자로 재배치 (크기는 보존).
+  const arrangeNodesIn = (pid: string) => {
+    const terms = liveTermsOf[pid] ?? [];
+    if (terms.length === 0) return;
+    const cols = Math.ceil(Math.sqrt(terms.length));
+    let x = 0, y = 0, rowH = 0;
+    terms.forEach((t, i) => {
+      const cur = liveCanvas?.nodes?.[t.id];
+      const s = nodeSize(cur ?? { x: 0, y: 0 });
+      const w = s.w + (liveTool[t.id] ? EDGE_W + TOOL_W : 0); // reserve tool sidecar
+      p.onMoveNode(t.id, { x, y, w: cur?.w, h: cur?.h });
+      rowH = Math.max(rowH, s.h);
+      if ((i + 1) % cols === 0) {
+        x = 0;
+        y += rowH + ROW_GAP;
+        rowH = 0;
+      } else {
+        x += w + ROW_GAP;
+      }
     });
   };
 
@@ -386,6 +443,23 @@ export default function LiveView(p: LiveProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [placedKey]);
 
+  // 입력 중이 아닐 때 Space → 전체 보기(fit). 폼/버튼 포커스(터미널 textarea 포함) 시엔 무시.
+  const fitRef = useRef(fitView);
+  fitRef.current = fitView;
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.code !== "Space") return;
+      const el = document.activeElement as HTMLElement | null;
+      const tag = el?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || tag === "BUTTON" || el?.isContentEditable)
+        return;
+      e.preventDefault();
+      fitRef.current();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
   return (
     <div className="lv2">
       {/* ---- canvas ---- */}
@@ -418,6 +492,16 @@ export default function LiveView(p: LiveProps) {
                   <span className="lv2-frame-name">{pr.name}</span>
                   {terms.length > 0 && <span className="lv2-frame-count">세션 {terms.length}</span>}
                   <span className="lv2-frame-spacer" />
+                  {terms.length > 0 && (
+                    <button
+                      className="lv2-frame-btn"
+                      onMouseDown={(e) => e.stopPropagation()}
+                      onClick={() => arrangeNodesIn(pid)}
+                      title="이 프로젝트의 세션 노드를 격자로 정렬"
+                    >
+                      ▦ 정렬
+                    </button>
+                  )}
                   <button
                     className="lv2-frame-btn"
                     onMouseDown={(e) => e.stopPropagation()}
@@ -543,6 +627,13 @@ export default function LiveView(p: LiveProps) {
         <div className="lv2-zoom" onMouseDown={(e) => e.stopPropagation()}>
           <button
             className="plan-zoom-btn"
+            onClick={arrangeFrames}
+            title="프로젝트 프레임을 격자로 정렬"
+          >
+            ▦
+          </button>
+          <button
+            className="plan-zoom-btn"
             onClick={() => setView((v) => ({ ...v, k: clampK(v.k / 1.2) }))}
           >
             －
@@ -556,7 +647,7 @@ export default function LiveView(p: LiveProps) {
           >
             ＋
           </button>
-          <button className="plan-zoom-btn fit" onClick={fitView} title="전체 보기">
+          <button className="plan-zoom-btn fit" onClick={fitView} title="전체 보기 (Space)">
             ⤢
           </button>
         </div>
