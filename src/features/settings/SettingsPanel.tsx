@@ -22,7 +22,9 @@ export default function SettingsPanel({
   customToolIds,
   onAddCustomTool,
   onRemoveCustomTool,
-  onSetToolRoot,
+  onScanTools,
+  onRegisterToolViaAI,
+  onCloseAfterAction,
 }: {
   onClose: () => void;
   projects: Project[];
@@ -33,12 +35,16 @@ export default function SettingsPanel({
   customToolIds: string[];
   onAddCustomTool: (root: string) => Promise<boolean>;
   onRemoveCustomTool: (manifestId: string) => void;
-  onSetToolRoot: (manifestId: string, path: string) => void;
+  onScanTools: () => Promise<{ root: string; name: string; id: string }[]>;
+  onRegisterToolViaAI: (folder: string) => void;
+  onCloseAfterAction: () => void;
 }) {
   const [diag, setDiag] = useState<Diagnostics | null>(null);
   const [exists, setExists] = useState<Record<string, boolean>>({});
   const [reinstalling, setReinstalling] = useState(false);
   const [rootExists, setRootExists] = useState<Record<string, boolean>>({});
+  const [tab, setTab] = useState<"general" | "tools">("general");
+  const [found, setFound] = useState<{ root: string; name: string; id: string }[]>([]);
 
   // Update state
   const [checking, setChecking] = useState(false);
@@ -78,11 +84,33 @@ export default function SettingsPanel({
     });
     if (picked && typeof picked === "string") await onAddCustomTool(picked);
   };
-  /** set / change a tool's root folder */
-  const pickRoot = async (manifestId: string, current?: string) => {
-    const picked = await open({ directory: true, multiple: false, defaultPath: current || undefined });
-    if (picked && typeof picked === "string") onSetToolRoot(manifestId, picked);
+  /** AI registration: pick the tool's folder, hand off to a claude session */
+  const registerAI = async () => {
+    const picked = await open({
+      directory: true,
+      multiple: false,
+      title: "툴 폴더 선택 — AI가 fleet-tool.json을 작성해요",
+    });
+    if (picked && typeof picked === "string") {
+      onRegisterToolViaAI(picked);
+      onCloseAfterAction(); // close settings so the spawned claude session is visible
+    }
   };
+
+  // auto-scan registered project folders for unconnected fleet-tool.json once the
+  // tools tab is opened (and after manifests change, e.g. a connect happened)
+  useEffect(() => {
+    if (tab !== "tools") return;
+    let alive = true;
+    onScanTools()
+      .then((f) => alive && setFound(f))
+      .catch(() => alive && setFound([]));
+    return () => {
+      alive = false;
+    };
+    // onScanTools identity changes each render — scan only on tab/manifest change
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab, manifests]);
 
   const reinstall = async () => {
     setReinstalling(true);
@@ -125,13 +153,31 @@ export default function SettingsPanel({
     <div className="settings-overlay" onMouseDown={onClose}>
       <div className="settings-panel" onMouseDown={(e) => e.stopPropagation()}>
         <div className="settings-head">
-          <span>설정 · 진단</span>
+          <span>설정</span>
           <button className="icon-btn" onClick={onClose} title="닫기">
             ✕
           </button>
         </div>
 
-        <div className="settings-body">
+        <div className="settings-tabs">
+          <button
+            className={`settings-tab ${tab === "general" ? "on" : ""}`}
+            onClick={() => setTab("general")}
+          >
+            일반 · 진단
+          </button>
+          <button
+            className={`settings-tab ${tab === "tools" ? "on" : ""}`}
+            onClick={() => setTab("tools")}
+          >
+            외부 툴
+            {Object.keys(manifests).length > 0 && (
+              <span className="settings-tab-count">{Object.keys(manifests).length}</span>
+            )}
+          </button>
+        </div>
+
+        <div className="settings-body" style={{ display: tab === "general" ? "block" : "none" }}>
           {/* Update */}
           <section className="settings-sec">
             <h3>업데이트</h3>
@@ -219,68 +265,6 @@ export default function SettingsPanel({
             </p>
           </section>
 
-          {/* External tools registry */}
-          <section className="settings-sec">
-            <div className="set-sec-head">
-              <h3>외부 툴</h3>
-              <button className="btn sm" onClick={connectTool}>
-                ＋ 툴 연결
-              </button>
-            </div>
-            {Object.keys(manifests).length === 0 && (
-              <p className="set-muted">연결된 툴이 없어요.</p>
-            )}
-            {Object.values(manifests).map((m) => {
-              const custom = customToolIds.includes(m.id);
-              const root = toolRoots[m.id];
-              const ok = root ? rootExists[m.id] : undefined;
-              return (
-                <div className="set-tool" key={m.id}>
-                  <div className="set-tool-main">
-                    <span className={`set-proj-dot ${ok === false ? "warn" : ok ? "ok" : ""}`} />
-                    <span className="set-proj-name">{m.name}</span>
-                    <span className="set-tool-tag">{custom ? "커스텀" : "내장"}</span>
-                    <span className="set-muted sm">모드 {m.modes.length}개</span>
-                  </div>
-                  <div className="set-tool-root">
-                    {root ? (
-                      <>
-                        <span className="set-proj-path mono" title={root}>
-                          {root}
-                        </span>
-                        {ok === false && <span className="warn sm">폴더 없음</span>}
-                        {ok && (
-                          <button className="btn sm" onClick={() => openPath(root)}>
-                            열기
-                          </button>
-                        )}
-                        <button className="btn sm" onClick={() => pickRoot(m.id, root)}>
-                          경로 변경
-                        </button>
-                      </>
-                    ) : (
-                      <>
-                        <span className="set-muted sm">폴더 미연결</span>
-                        <button className="btn sm" onClick={() => pickRoot(m.id)}>
-                          폴더 지정
-                        </button>
-                      </>
-                    )}
-                    {custom && (
-                      <button
-                        className="btn sm danger"
-                        onClick={() => onRemoveCustomTool(m.id)}
-                        title="이 툴 연결 해제"
-                      >
-                        삭제
-                      </button>
-                    )}
-                  </div>
-                </div>
-              );
-            })}
-          </section>
-
           {/* Project paths */}
           <section className="settings-sec">
             <h3>프로젝트 폴더</h3>
@@ -310,6 +294,180 @@ export default function SettingsPanel({
                 </div>
               );
             })}
+          </section>
+        </div>
+
+        {/* ---- Tools tab: concept → contract → add(2 ways) → cards ---- */}
+        <div className="settings-body" style={{ display: tab === "tools" ? "block" : "none" }}>
+          {/* 1. concept */}
+          <section className="settings-sec">
+            <h3>외부 툴이란</h3>
+            <p className="tool-lead">
+              Fleet이 띄운 claude 세션이 <b>어떤 CLI를 실행하면</b>, Fleet이 hook으로 그 명령을 보고{" "}
+              <code>detect</code>에 걸리면 라이브 캔버스의 세션 노드에 <b>툴 노드</b>를 매달아
+              보여줘요. 명령 형태에 제약이 없고, 한 툴에 여러 CLI도 담을 수 있어요. 클로드는
+              Fleet을 모르고, Fleet이 <b>관찰만</b> 합니다 (직접 실행하지 않음).
+            </p>
+          </section>
+
+          {/* 2. requirements — detection only */}
+          <section className="settings-sec">
+            <h3>등록 요건</h3>
+            <p className="tool-lead">
+              <code>id</code>, <code>name</code>,{" "}
+              <code>detect</code>(그 툴을 실행하는 명령을 알아볼 정규식 — 문자열 하나 또는 배열)만
+              있으면 돼요. 실행 폼·옵션 같은 건 필요 없어요.
+            </p>
+            <p className="tool-req-sub">
+              결과 미리보기(입력→결과 썸네일)를 노드에 띄우려면, 그 CLI가 결과물을{" "}
+              <b>입력 폴더 아래의 하위 폴더</b>(<code>outDirName</code>, 기본 <code>_out</code>)에
+              쓰면 Fleet이 그걸 찾아 보여줘요. (선택 — 없어도 노드는 뜸)
+            </p>
+            <p className="set-note">
+              전체 규격: 저장소의 <code>docs/EXTERNAL_TOOLS.md</code>.
+            </p>
+          </section>
+
+          {/* 3. add — two ways + auto-discovered */}
+          <section className="settings-sec">
+            <h3>툴 추가</h3>
+            <div className="tool-add-ways">
+              <div className="tool-add-way">
+                <div className="tool-add-way-title">🤖 AI로 등록</div>
+                <p>
+                  툴 폴더를 고르면 claude 세션이 그 CLI를 분석해 <code>fleet-tool.json</code>을
+                  작성하고, 저장되는 순간 Fleet이 자동으로 연결해요. 구독 세션이라 추가 비용 없음.
+                </p>
+                <button className="primary sm" onClick={registerAI}>
+                  AI로 툴 등록
+                </button>
+              </div>
+              <div className="tool-add-way">
+                <div className="tool-add-way-title">✍️ 직접 연결</div>
+                <p>
+                  이미 <code>fleet-tool.json</code>이 있는 폴더를 직접 선택해 연결해요.
+                </p>
+                <button className="btn sm" onClick={connectTool}>
+                  ＋ 폴더 연결
+                </button>
+              </div>
+            </div>
+            {found.length > 0 && (
+              <div className="tool-found">
+                <div className="tool-found-title">프로젝트 폴더에서 발견됨 — 연결할 수 있어요</div>
+                {found.map((f) => (
+                  <div className="tool-found-row" key={f.root}>
+                    <span className="set-proj-dot ok" />
+                    <span className="set-proj-name">{f.name}</span>
+                    <span className="set-proj-path mono" title={f.root}>
+                      {f.root}
+                    </span>
+                    <button className="btn sm" onClick={() => onAddCustomTool(f.root)}>
+                      연결
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </section>
+
+          {/* 4. connected tools — cards */}
+          <section className="settings-sec">
+            <h3>연결된 툴</h3>
+            {Object.keys(manifests).length === 0 ? (
+              <p className="set-muted">아직 연결된 툴이 없어요 — 위에서 추가하세요.</p>
+            ) : (
+              <div className="tool-cards">
+                {Object.values(manifests).map((m) => {
+                  const custom = customToolIds.includes(m.id);
+                  const root = toolRoots[m.id];
+                  const ok = root ? rootExists[m.id] : undefined;
+                  const detects = Array.isArray(m.detect) ? m.detect : m.detect ? [m.detect] : [];
+                  return (
+                    <div className="tool-card" key={m.id}>
+                      <div className="tool-card-head">
+                        <span className="set-proj-dot ok" />
+                        <span className="tool-card-name">{m.name}</span>
+                        <span className="set-tool-tag">{custom ? "커스텀" : "내장"}</span>
+                        {detects.length > 0 && (
+                          <span
+                            className="tool-card-detect"
+                            title="claude 세션의 명령을 자동 감지해 라이브 노드로 표시"
+                          >
+                            자동 감지
+                          </span>
+                        )}
+                        <span className="tool-card-spacer" />
+                        {custom && (
+                          <button
+                            className="btn sm danger"
+                            onClick={() => onRemoveCustomTool(m.id)}
+                            title="이 툴 연결 해제"
+                          >
+                            삭제
+                          </button>
+                        )}
+                      </div>
+
+                      {m.desc && <div className="tool-card-desc">{m.desc}</div>}
+
+                      {detects.length > 0 && (
+                        <div className="tool-card-cmd mono" title="이 패턴에 걸리는 명령을 감지해요">
+                          감지: {detects.map((re) => re.source).join("  ·  ")}
+                        </div>
+                      )}
+
+                      {custom && root && (
+                        <div className="tool-card-row">
+                          <span className="tool-card-key">위치</span>
+                          <span className="set-proj-path mono" title={root}>
+                            {root}
+                          </span>
+                          {ok === false && <span className="warn sm">폴더 없음</span>}
+                          {ok && (
+                            <button className="btn sm" onClick={() => openPath(root)}>
+                              열기
+                            </button>
+                          )}
+                        </div>
+                      )}
+
+                      {m.modes.length > 0 && (
+                        <>
+                          <div className="tool-card-modes-title">기능 {m.modes.length}가지</div>
+                          <div className="tool-modes">
+                            {m.modes.map((mode) => (
+                              <div className="tool-mode" key={mode.id} title={mode.desc}>
+                                <span className="tool-mode-icon">{mode.icon}</span>
+                                <span className="tool-mode-body">
+                                  <span className="tool-mode-label">{mode.label}</span>
+                                  {mode.desc && <span className="tool-mode-desc">{mode.desc}</span>}
+                                </span>
+                              </div>
+                            ))}
+                          </div>
+                        </>
+                      )}
+
+                      {/* how the live node will look */}
+                      <div className="tool-nodeinfo">
+                        <span className="tool-nodeinfo-mock">
+                          <span className="tool-nodeinfo-box">입력</span>
+                          <span className="tool-nodeinfo-arrow">→</span>
+                          <span className="tool-nodeinfo-box out">결과</span>
+                          <span className="tool-nodeinfo-mini">▫▫▫ +N</span>
+                        </span>
+                        <span className="tool-nodeinfo-text">
+                          claude가 이 툴을 쓰면 라이브 노드에 <b>대표 입력→결과 1쌍</b>이 크게,
+                          나머지 결과가 작은 썸네일로 떠요 (결과를{" "}
+                          <code>&lt;입력&gt;/{m.outDirName}</code>에 쓰는 경우).
+                        </span>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
           </section>
         </div>
       </div>

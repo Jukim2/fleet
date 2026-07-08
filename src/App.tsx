@@ -348,10 +348,7 @@ export default function App() {
             statuses: f.statuses,
             activity: f.activity,
             liveTool: f.liveTool,
-            toolJobs: f.toolJobs,
             manifests: f.toolManifests,
-            toolRoots: f.config.toolRoots ?? {},
-            toolPresets: f.config.toolPresets ?? {},
             liveCanvas: f.config.liveCanvas,
             onPlaceFrames: f.placeLiveFrames,
             onRemoveFrame: f.removeLiveFrame,
@@ -367,11 +364,7 @@ export default function App() {
               f.jumpToTerm(pid, tid);
               setPlanOpen(false);
             },
-            onSetToolRoot: f.setToolRoot,
-            onRunTool: f.runTool,
-            onCancelTool: f.cancelToolJob,
-            onDismissTool: f.dismissToolJob,
-            onImportFiles: f.importToolResults,
+            onDismissLiveTool: f.dismissLiveTool,
           }}
           onClose={() => setPlanOpen(false)}
         />
@@ -431,7 +424,9 @@ export default function App() {
           customToolIds={Object.keys(f.config.customTools ?? {})}
           onAddCustomTool={f.addCustomTool}
           onRemoveCustomTool={f.removeCustomTool}
-          onSetToolRoot={f.setToolRoot}
+          onScanTools={f.scanProjectTools}
+          onRegisterToolViaAI={f.registerToolViaAI}
+          onCloseAfterAction={() => setSettingsOpen(false)}
         />
       )}
 

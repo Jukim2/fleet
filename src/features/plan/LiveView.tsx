@@ -1,5 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { convertFileSrc } from "@tauri-apps/api/core";
 import { listClaudeSessions } from "../../api/claude";
+import { listToolOutputs, ToolFile } from "../../api/tools";
+import { openPath } from "../../api/system";
 import {
   ClaudeSession,
   LiveCanvas,
@@ -7,13 +10,10 @@ import {
   LiveToolUse,
   PlanViewport,
   Project,
-  SavedToolRun,
   Terminal,
   TermStatus,
-  ToolJob,
 } from "../../types";
-import { ToolManifest, ToolValues } from "../../lib/tools";
-import ToolRunModal from "../tools/ToolRunModal";
+import { ToolManifest } from "../../lib/tools";
 import { TermSlot } from "../terminals/termDock";
 import "../tools/live.css";
 
@@ -23,10 +23,7 @@ export type LiveProps = {
   statuses: Record<string, TermStatus>;
   activity: Record<string, string>;
   liveTool: Record<string, LiveToolUse>;
-  toolJobs: Record<string, ToolJob>;
   manifests: Record<string, ToolManifest>;
-  toolRoots: Record<string, string>;
-  toolPresets: Record<string, Record<string, SavedToolRun>>;
   liveCanvas?: LiveCanvas;
   onPlaceFrames: (frames: Record<string, LiveRect>) => void;
   onRemoveFrame: (projectId: string) => void;
@@ -43,17 +40,8 @@ export type LiveProps = {
   /** 세션 닫기 (터미널 탭 삭제) */
   onCloseTerm: (projectId: string, termId: string) => void;
   onJumpTerm: (projectId: string, termId: string) => void;
-  onSetToolRoot: (manifestId: string, path: string) => void;
-  onRunTool: (
-    projectId: string,
-    manifestId: string,
-    mode: string,
-    inputDir: string,
-    values: ToolValues,
-  ) => Promise<string | null>;
-  onCancelTool: (jobId: string) => void;
-  onDismissTool: (jobId: string) => void;
-  onImportFiles: (jobId: string, files: string[], destSub: string) => Promise<void>;
+  /** 세션이 구동한 라이브 툴 노드를 수동으로 닫기 */
+  onDismissLiveTool: (termId: string) => void;
 };
 
 const STATUS_LABEL: Record<TermStatus, string> = {
@@ -79,7 +67,6 @@ const NODE_MAX_H = 800;
 const TOOL_W = 280;
 const EDGE_W = 30;
 const ROW_GAP = 16;
-const JOB_H = 84;
 const FRAME_PAD = 14;
 const FRAME_HEAD = 44;
 const FRAME_MIN_W = 320;
@@ -108,12 +95,8 @@ type Pos = { x: number; y: number };
  * 저장된다. 왼쪽 목록에서 프로젝트를 캔버스로 꺼내오거나 다시 넣어둔다.
  */
 export default function LiveView(p: LiveProps) {
-  const { projects, terminals, statuses, liveTool, toolJobs, manifests, liveCanvas } = p;
+  const { projects, terminals, statuses, liveTool, manifests, liveCanvas } = p;
 
-  /** open tool GUI: fresh run for a project, or an existing job's progress/results */
-  const [modal, setModal] = useState<{ projectId: string; manifestId: string; jobId?: string } | null>(
-    null,
-  );
   /** 사이드바 하단 세션 목록이 따라가는 선택된 프로젝트 (메인 화면의 프로젝트 선택과 동일 개념) */
   const [selectedPid, setSelectedPid] = useState<string | null>(null);
   /** 사이드바 가로폭 (드래그로 조절, liveCanvas.sideW에 저장) */
@@ -166,13 +149,6 @@ export default function LiveView(p: LiveProps) {
     }
     return m;
   }, [terminals, statuses]);
-
-  const jobsByProject = useMemo(() => {
-    const m: Record<string, ToolJob[]> = {};
-    for (const j of Object.values(toolJobs)) (m[j.projectId] ??= []).push(j);
-    for (const list of Object.values(m)) list.sort((a, b) => a.startedAt - b.startedAt);
-    return m;
-  }, [toolJobs]);
 
   // ---- frames: stored rects; first open auto-places live projects ----
   const storedFrames = liveCanvas?.frames;
@@ -253,7 +229,6 @@ export default function LiveView(p: LiveProps) {
   // ---- geometry of one frame (world size), derived from its rows ----
   const frameGeom = (pid: string) => {
     const terms = liveTermsOf[pid] ?? [];
-    const jobs = jobsByProject[pid] ?? [];
     let maxBottom = 0;
     let maxRight = NODE_W;
     terms.forEach((t, i) => {
@@ -262,19 +237,13 @@ export default function LiveView(p: LiveProps) {
       maxBottom = Math.max(maxBottom, r.y + s.h);
       maxRight = Math.max(maxRight, r.x + s.w + (liveTool[t.id] ? EDGE_W + TOOL_W : 0));
     });
-    const jobsY = terms.length ? maxBottom + ROW_GAP : 0;
-    if (jobs.length) {
-      maxBottom = jobsY + jobs.length * JOB_H;
-      maxRight = Math.max(maxRight, 450);
-    }
-    const empty = terms.length === 0 && jobs.length === 0;
+    const empty = terms.length === 0;
     const stored = frameRect(pid);
     const contentW = maxRight + FRAME_PAD * 2;
     const contentH = FRAME_HEAD + (empty ? 64 : maxBottom + FRAME_PAD * 2);
     return {
       w: Math.max(FRAME_MIN_W, contentW, stored?.w ?? 0),
       h: Math.max(FRAME_MIN_H, contentH, stored?.h ?? 0),
-      jobsY,
       empty,
     };
   };
@@ -448,9 +417,6 @@ export default function LiveView(p: LiveProps) {
     p.onResumeSession(pid, s);
   };
 
-  const modalProject = modal ? projects.find((x) => x.id === modal.projectId) : null;
-  const modalManifest = modal ? manifests[modal.manifestId] : null;
-
   // ---- sidebar bottom: sessions of the selected project (main-view style) ----
   const selProj = projects.find((pr) => pr.id === effectivePid) ?? null;
   const selTerms = selProj
@@ -599,7 +565,6 @@ export default function LiveView(p: LiveProps) {
             const rect = frameRect(pid)!;
             const g = frameGeom(pid);
             const terms = liveTermsOf[pid] ?? [];
-            const jobs = jobsByProject[pid] ?? [];
             return (
               <section
                 key={pid}
@@ -630,17 +595,6 @@ export default function LiveView(p: LiveProps) {
                   >
                     ＋ 셸
                   </button>
-                  {Object.values(manifests).map((m) => (
-                    <button
-                      key={m.id}
-                      className="lv2-frame-btn"
-                      onMouseDown={(e) => e.stopPropagation()}
-                      onClick={() => setModal({ projectId: pid, manifestId: m.id })}
-                      title={`${m.name} 실행 (GUI)`}
-                    >
-                      ＋ {m.name}
-                    </button>
-                  ))}
                   <button
                     className="lv2-frame-btn x"
                     onMouseDown={(e) => e.stopPropagation()}
@@ -716,80 +670,13 @@ export default function LiveView(p: LiveProps) {
                           />
                         </div>
                         {use && useManifest && (
-                          <>
-                            <span className="lv-edge live" style={{ flexBasis: EDGE_W }} />
-                            <div
-                              className="lv-node tool claude"
-                              style={{ width: TOOL_W }}
-                              title={use.detail}
-                            >
-                              <span className="lv-tool-name">{useManifest.name}</span>
-                              <span className="lv-tool-detail">
-                                {use.detail.length > 52 ? use.detail.slice(0, 52) + "…" : use.detail}
-                              </span>
-                              <span className="lv-tool-tag">
-                                세션이 구동 중 · {fmtElapsed(now - use.at)}
-                              </span>
-                            </div>
-                          </>
-                        )}
-                      </div>
-                    );
-                  })}
-
-                  {jobs.map((j, i) => {
-                    const m = manifests[j.manifestId];
-                    const modeLabel = m?.modes.find((x) => x.id === j.mode)?.label ?? j.mode;
-                    const running = j.status === "running";
-                    const pct = j.total
-                      ? Math.min(100, Math.round(((j.done + j.failed) / j.total) * 100))
-                      : null;
-                    return (
-                      <div
-                        className="lv2-row"
-                        key={j.id}
-                        style={{ left: 0, top: g.jobsY + i * JOB_H }}
-                      >
-                        <button
-                          className={`lv-node tool job ${j.status}`}
-                          style={{ width: 420 }}
-                          onClick={() =>
-                            setModal({ projectId: pid, manifestId: j.manifestId, jobId: j.id })
-                          }
-                          title="클릭: 진행 상황 / 결과 보기"
-                        >
-                          <span className="lv2-job-head">
-                            <span className="lv-fleet-badge">Fleet</span>
-                            <span className="lv-tool-name">
-                              {m?.name ?? j.manifestId} · {modeLabel}
-                            </span>
-                          </span>
-                          <span className="lv-job-bar">
-                            <span
-                              className={`lv-job-fill ${running && pct === null ? "indet" : ""} ${
-                                j.status === "error" ? "err" : ""
-                              }`}
-                              style={pct !== null ? { width: `${pct}%` } : undefined}
-                            />
-                          </span>
-                          <span className="lv-tool-tag">
-                            {running
-                              ? `${j.done}${j.total ? `/${j.total}` : ""} 처리 · ${fmtElapsed(now - j.startedAt)}`
-                              : j.status === "done"
-                                ? `완료 · ${j.done}개 처리 — 클릭해 결과 보기`
-                                : j.status === "killed"
-                                  ? "중단됨"
-                                  : "실패 — 클릭해 로그 확인"}
-                          </span>
-                        </button>
-                        {running ? (
-                          <button className="lv-job-x" onClick={() => p.onCancelTool(j.id)} title="중단">
-                            ■
-                          </button>
-                        ) : (
-                          <button className="lv-job-x" onClick={() => p.onDismissTool(j.id)} title="제거">
-                            ✕
-                          </button>
+                          <LiveToolNode
+                            use={use}
+                            manifest={useManifest}
+                            busy={st === "busy"}
+                            now={now}
+                            onDismiss={() => p.onDismissLiveTool(t.id)}
+                          />
                         )}
                       </div>
                     );
@@ -835,24 +722,146 @@ export default function LiveView(p: LiveProps) {
           </button>
         </div>
       </div>
-
-      {modal && modalProject && modalManifest && (
-        <ToolRunModal
-          project={modalProject}
-          manifest={modalManifest}
-          toolRoot={p.toolRoots[modalManifest.id]}
-          preset={p.toolPresets[modalProject.id]?.[modalManifest.id]}
-          toolJobs={toolJobs}
-          initialJobId={modal.jobId}
-          onSetToolRoot={p.onSetToolRoot}
-          onRun={(mode, inputDir, values) =>
-            p.onRunTool(modalProject.id, modalManifest.id, mode, inputDir, values)
-          }
-          onCancel={p.onCancelTool}
-          onImport={p.onImportFiles}
-          onClose={() => setModal(null)}
-        />
-      )}
     </div>
+  );
+}
+
+/** split a command string into tokens, respecting quotes */
+function tokenize(s: string): string[] {
+  const out: string[] = [];
+  const re = /"([^"]*)"|'([^']*)'|(\S+)/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(s))) out.push(m[1] ?? m[2] ?? m[3]);
+  return out;
+}
+/** By the tool contract the argv is `program … <inputDir> --tool <mode> …`, so
+ *  the input folder is the token right before `--tool`. Best-effort: the hook
+ *  detail is truncated to 140 chars, so a very long path may not survive. */
+function parseInputDir(detail: string): string | null {
+  const toks = tokenize(detail);
+  const ti = toks.indexOf("--tool");
+  return ti > 0 ? toks[ti - 1] : null;
+}
+function joinPath(dir: string, sub: string): string {
+  const sep = dir.includes("\\") ? "\\" : "/";
+  return dir.replace(/[\\/]+$/, "") + sep + sub;
+}
+
+/**
+ * The tool node hanging off a claude session node (path B: the session drove a
+ * known tool, seen via the PreToolUse hook). It stays pinned after the turn ends
+ * — dismissed only by its ✕ or when the terminal stops — and once the run
+ * settles it best-effort scans the tool's output folder to show result thumbs.
+ */
+function LiveToolNode({
+  use,
+  manifest,
+  busy,
+  now,
+  onDismiss,
+}: {
+  use: LiveToolUse;
+  manifest: ToolManifest;
+  busy: boolean;
+  now: number;
+  onDismiss: () => void;
+}) {
+  const [outs, setOuts] = useState<ToolFile[] | null>(null);
+  const [input, setInput] = useState<ToolFile | null>(null);
+  const inputDir = useMemo(() => parseInputDir(use.detail), [use.detail]);
+  const outDir = inputDir ? joinPath(inputDir, manifest.outDirName) : null;
+
+  // once the session settles, scan output dir for this run's results and the
+  // input dir for a representative "before" image (a before→after pair)
+  useEffect(() => {
+    if (busy || !outDir || !inputDir) return;
+    let alive = true;
+    listToolOutputs(outDir, use.at - 5000)
+      .then((fs) => alive && setOuts(fs))
+      .catch(() => alive && setOuts([]));
+    listToolOutputs(inputDir, 0)
+      .then((fs) => alive && setInput(fs[0] ?? null))
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [busy, outDir, inputDir, use.at]);
+
+  const firstOut = outs?.[0] ?? null;
+  const restOut = (outs ?? []).slice(1, 9);
+  const tag = busy
+    ? `세션이 구동 중 · ${fmtElapsed(now - use.at)}`
+    : outs === null
+      ? "완료 · 결과 확인 중…"
+      : outs.length
+        ? `완료 · 결과 ${outs.length}개`
+        : "완료";
+
+  return (
+    <>
+      <span className={`lv-edge ${busy ? "live" : ""}`} style={{ flexBasis: EDGE_W }} />
+      <div className="lv-node tool claude" style={{ width: TOOL_W }} title={use.detail}>
+        <div className="lv-tool-head">
+          <span className="lv-tool-name">{manifest.name}</span>
+          <button className="lv-tool-x" onClick={onDismiss} title="이 노드 닫기">
+            ✕
+          </button>
+        </div>
+        <span className="lv-tool-detail">
+          {use.detail.length > 52 ? use.detail.slice(0, 52) + "…" : use.detail}
+        </span>
+        <span className="lv-tool-tag">{tag}</span>
+
+        {/* representative before → after pair */}
+        {firstOut && (
+          <div className="lv-tool-pair">
+            {input && (
+              <>
+                <button
+                  className="lv-tool-big"
+                  title={`입력: ${input.name} — 클릭해서 열기`}
+                  onClick={() => openPath(input.path)}
+                >
+                  <img src={convertFileSrc(input.path)} alt={input.name} loading="lazy" />
+                  <span className="lv-tool-big-tag">입력</span>
+                </button>
+                <span className="lv-tool-pair-arrow">→</span>
+              </>
+            )}
+            <button
+              className="lv-tool-big"
+              title={`결과: ${firstOut.name} — 클릭해서 열기`}
+              onClick={() => openPath(firstOut.path)}
+            >
+              <img src={convertFileSrc(firstOut.path)} alt={firstOut.name} loading="lazy" />
+              <span className="lv-tool-big-tag out">결과</span>
+            </button>
+          </div>
+        )}
+        {restOut.length > 0 && (
+          <div className="lv-tool-thumbs">
+            {restOut.map((f) => (
+              <button
+                key={f.path}
+                className="lv-tool-thumb"
+                title={`${f.rel} — 클릭해서 열기`}
+                onClick={() => openPath(f.path)}
+              >
+                <img src={convertFileSrc(f.path)} alt={f.name} loading="lazy" />
+              </button>
+            ))}
+            {outs && outs.length - 1 > restOut.length && outDir && (
+              <button
+                className="lv-tool-more"
+                onClick={() => openPath(outDir)}
+                title="결과 폴더 열기"
+              >
+                +{outs.length - 1 - restOut.length}
+              </button>
+            )}
+          </div>
+        )}
+      </div>
+    </>
   );
 }

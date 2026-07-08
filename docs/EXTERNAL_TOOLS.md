@@ -1,74 +1,54 @@
 # 외부 툴 연결 정책 (fleet-tool.json)
 
-Fleet은 CLI가 있는 외부 툴을 GUI로 감싸 커맨드센터(라이브 캔버스)에서 구동한다.
-툴이 아래 계약만 지키면 **코드 수정 없이** 폴더 연결만으로 붙는다:
-라이브 캔버스 왼쪽 하단 **`＋ 툴 연결`** → 툴 루트 폴더 선택 → 루트의
-`fleet-tool.json`을 읽어 검증·저장한다.
+Fleet은 CLI가 있는 외부 툴을 **감지**해서 라이브 캔버스에 시각화한다. Fleet이 띄운
+claude 세션이 그 툴의 CLI를 실행하면, Fleet이 PreToolUse hook으로 그 명령을 보고
+`detect`에 걸리면 세션 노드에 **툴 노드**를 매단다. 결과물을 예측 가능한 폴더에 쓰면
+입력→결과 썸네일까지 보여준다.
 
-## 툴이 지켜야 하는 것 (정책)
+**Fleet은 툴을 직접 실행하지 않는다.** 클로드가 실행하고 Fleet은 관찰만 한다(클로드는
+Fleet의 존재를 모른다). 그래서 명령 형태에 제약이 없고, 한 툴에 여러 CLI도 담을 수 있다.
 
-1. **비대화형 CLI 하나.** `프로그램 [고정 인자…] <입력 폴더> --tool <모드> [--옵션 값…]`
-   형태로 실행 가능해야 하고, 도중에 사용자 입력을 기다리면 안 된다.
-2. **옵션은 유한 열거형.** 모든 옵션이 플래그로 표현되고, 선택지는 매니페스트에
-   나열할 수 있어야 한다 (자유 문자열·숫자·불리언·색상도 가능).
-3. **원본 불변, 결과는 예측 가능한 위치.** 입력 폴더를 수정하지 않고, 결과물을
-   `<입력 폴더>/<outDirName>` (기본 `_out`) 아래에 쓴다. Fleet은 잡 시작 시각
-   이후 생성된 이미지(png/webp/gif/svg/jpg)를 그 폴더에서 스캔해 결과 그리드로 보여준다.
-4. **종료 코드.** 성공 0, 실패 비-0. 중단은 프로세스 kill로 처리된다.
-5. **(권장) 진행 로그 컨벤션.** 지키면 진행률 바가 정확해지고, 안 지켜도
-   동작은 한다(인디케이터만 표시):
-   - 시작 시 총 개수: `… — 12 file(s)` (`— N ` 패턴)
-   - 항목 성공: `[3/12] name.png ... done …` (`[i/N]` + `done`)
-   - 항목 실패: `[4/12] bad.png ... FAILED — reason`
+연결·관리는 **설정 패널의 "외부 툴" 탭**에서 한다 (AI 등록 / 직접 연결 / 자동 발견).
+
+## 요건
+
+- **필수**: `id`, `name`, `detect`. 실행 폼·옵션 같은 건 필요 없다.
+- **결과 썸네일(선택)**: 그 CLI가 결과물을 `<입력 폴더>/<outDirName>`(기본 `_out`) 아래에
+  쓰면, Fleet이 잡 이후 생성된 이미지(png/webp/gif/svg/jpg)를 찾아 노드에 대표 입력→결과
+  1쌍 + 나머지 썸네일로 보여준다. (없어도 노드는 뜬다)
 
 ## fleet-tool.json 스키마
 
-툴 루트에 커밋한다. 참조 구현: SpriteForge의 `fleet-tool.json`.
+툴 루트(또는 아무 폴더)에 둔다. 참조 구현: SpriteForge.
 
 ```jsonc
 {
   "id": "spriteforge",          // 소문자·숫자·하이픈. 전역 고유
   "name": "SpriteForge",        // UI 표시명
-  "program": "node",            // 실행 파일 (PATH에서 해석)
-  "scriptArgs": ["scripts/sf-headless.mjs"],  // 입력 폴더 앞에 붙는 고정 인자 (툴 루트 기준 상대경로)
-  "detect": "sf-headless\\.mjs|sprite-batch", // (선택) claude 세션의 Bash 명령에서 이 툴을 감지할 정규식
-  "outDirName": "_out",         // (선택, 기본 _out) 결과물 하위 폴더명
-  "modes": [                    // 1개 이상. --tool <id>로 전달됨
-    {
-      "id": "upscale",
-      "label": "업스케일",       // UI 라벨 (한국어)
-      "desc": "AI로 확대",
-      "icon": "⤢",
-      "options": [
-        {
-          "key": "scale",       // 폼 필드 키
-          "flag": "--scale",    // CLI 플래그
-          "kind": "value",      // value = "--flag 값" | flag = true일 때 플래그만 | negFlag = false일 때 플래그만
-          "type": "select",     // select | number | text | bool | color
-          "label": "배율",
-          "choices": ["2", "3", "4"],   // select 필수
-          "default": "4",
-          "optional": true      // (선택) 값이 비어있으면 플래그 자체를 생략
-          // number엔 min/max/step, 설명은 hint
-        }
-      ]
-    }
+  "desc": "스프라이트/이미지 배치 처리 CLI",  // (선택) 한 줄 소개
+
+  // detect: 문자열 하나 또는 배열. 이 툴을 실행하는 claude 명령을 알아볼 정규식.
+  // 배열이면 여러 CLI/명령을 한 툴로 묶는다.
+  "detect": ["sf-headless\\.mjs", "sprite-batch"],
+
+  "outDirName": "_out",         // (선택, 기본 _out) 결과물 하위 폴더명 — 썸네일 스캔에 사용
+
+  // modes: (선택) 이 툴이 뭘 하는지 설명(카드에 "기능"으로 표시). 실행에는 쓰이지 않음.
+  "modes": [
+    { "id": "upscale", "label": "업스케일", "desc": "AI로 확대", "icon": "⤢" },
+    { "id": "bgremove", "label": "배경 제거", "desc": "투명 PNG로", "icon": "✂" }
   ]
 }
 ```
 
-최종 argv는 `program scriptArgs… <입력폴더> --tool <모드id> <옵션들…> --out <outDirName>`,
-작업 디렉토리는 **툴 루트**다.
-
 ## 동작 방식 (Fleet 쪽)
 
 - 검증·파싱: `src/lib/tools.ts`의 `parseToolManifest` (문제가 있으면 한국어 메시지로 거부)
+- 감지: `detectToolUse`가 claude의 Bash/Skill 명령을 `detect`(단일/배열)와 대조 → 라이브 노드
+- 노드 유지: 세션 턴이 끝나도 노드는 남고(✕로 수동 삭제, 터미널 종료 시 자동 정리),
+  세션이 idle이 되면 입력 폴더/`outDirName`을 best-effort 스캔해 before→after 썸네일 표시
+  (입력 폴더는 명령에서 `--tool` 앞 토큰 등으로 추정 — hook detail이 140자로 잘리면 실패 가능)
 - 저장: `FleetConfig.customTools[id]`(원본 JSON) + `toolRoots[id]`(폴더 경로)
-- 실행: `src-tauri/src/tools.rs`가 프로세스를 spawn하고 stdout/stderr를
-  `tool-job-output` 이벤트로 스트리밍, 종료 시 `tool-job-exit`
-- 감지: claude 세션의 PreToolUse(Bash) 명령이 `detect`에 걸리면 라이브 캔버스의
-  해당 세션 노드에 툴 노드가 매달림
 - 같은 `id`의 내장 매니페스트가 있으면 연결한 fleet-tool.json이 우선한다
 
-내장 툴(코드로 추가하는 경우)은 `src/lib/tools.ts`의 `TOOL_MANIFESTS`에
-TypeScript 매니페스트를 등록한다 — 스키마는 위와 동일.
+내장 툴(코드로 추가)은 `src/lib/tools.ts`의 `TOOL_MANIFESTS`에 등록한다.

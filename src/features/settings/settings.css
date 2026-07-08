@@ -203,32 +203,52 @@
   flex-shrink: 0;
 }
 
-/* external tools registry */
-.set-sec-head {
+/* settings tabs */
+.settings-tabs {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  margin-bottom: 10px;
-}
-.set-sec-head h3 {
-  margin: 0;
-}
-.set-tool {
-  display: flex;
-  flex-direction: column;
   gap: 4px;
-  padding: 8px 0;
+  padding: 8px 12px 0;
+  border-bottom: 1px solid var(--border);
 }
-.set-tool + .set-tool {
-  border-top: 1px solid var(--border);
-}
-.set-tool-main {
+.settings-tab {
   display: flex;
   align-items: center;
-  gap: 8px;
-  min-width: 0;
+  gap: 6px;
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--muted);
+  font-size: 13px;
+  padding: 8px 12px;
+  cursor: pointer;
+  transition:
+    color var(--dur-fast) var(--ease-out),
+    border-color var(--dur-fast) var(--ease-out);
 }
+.settings-tab:hover {
+  color: var(--text);
+}
+.settings-tab.on {
+  color: var(--text);
+  font-weight: 600;
+  border-bottom-color: var(--accent);
+}
+.settings-tab-count {
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--bg);
+  background: var(--muted);
+  border-radius: 999px;
+  min-width: 15px;
+  height: 15px;
+  display: grid;
+  place-items: center;
+  padding: 0 4px;
+}
+.settings-tab.on .settings-tab-count {
+  background: var(--accent);
+}
+
 .set-tool-tag {
   font-size: 10px;
   font-weight: 700;
@@ -239,19 +259,286 @@
   padding: 1px 7px;
   flex-shrink: 0;
 }
-.set-tool-root {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  min-width: 0;
-  padding-left: 15px;
-}
-.set-tool-root .set-proj-path {
-  flex: 1;
-}
 .btn.danger:hover:not(:disabled) {
   border-color: #f87171;
   color: #f87171;
+}
+.primary.sm {
+  padding: 5px 11px;
+  font-size: 12px;
+}
+
+/* tools tab: how-to-add help box */
+.tool-howto {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 14px;
+  margin: 4px 0 16px;
+}
+.tool-howto-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+.tool-howto-head h3 {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text);
+  text-transform: none;
+  letter-spacing: 0;
+}
+.tool-howto-steps {
+  margin: 0 0 8px;
+  padding-left: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  font-size: 12.5px;
+  color: var(--text);
+  line-height: 1.5;
+}
+.tool-howto code,
+.tool-card-cmd code,
+.set-note code {
+  font-family: "SF Mono", Menlo, Monaco, monospace;
+  font-size: 11.5px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0 4px;
+}
+
+/* tools tab: concept + contract + add-ways */
+.tool-lead {
+  font-size: 12.5px;
+  color: var(--text);
+  line-height: 1.6;
+  margin: 0;
+}
+.tool-req-sub {
+  font-size: 12.5px;
+  color: var(--text);
+  line-height: 1.6;
+  margin: 10px 0 6px;
+}
+.tool-contract {
+  margin: 0 0 8px;
+  padding-left: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 12.5px;
+  color: var(--text);
+  line-height: 1.5;
+}
+.tool-add-ways {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+.tool-add-way {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.tool-add-way-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text);
+}
+.tool-add-way p {
+  margin: 0;
+  flex: 1;
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.5;
+}
+.tool-add-way button {
+  align-self: flex-start;
+}
+.tool-found {
+  border: 1px dashed color-mix(in srgb, var(--green) 45%, var(--border));
+  border-radius: 10px;
+  padding: 10px 12px;
+}
+.tool-found-title {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--green);
+  margin-bottom: 6px;
+}
+.tool-found-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+  min-width: 0;
+}
+.tool-found-row .set-proj-path {
+  flex: 1;
+}
+
+/* tools tab: cards */
+.tool-cards {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.tool-card {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px 14px;
+}
+.tool-card-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.tool-card-name {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text);
+}
+.tool-card-detect {
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  border-radius: 999px;
+  padding: 1px 7px;
+}
+.tool-card-spacer {
+  flex: 1;
+}
+.tool-card-desc {
+  margin: 8px 0 0;
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.45;
+}
+.tool-card-cmd {
+  margin: 10px 0;
+  padding: 7px 10px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  color: var(--muted);
+  font-size: 11.5px;
+  overflow-x: auto;
+  white-space: nowrap;
+}
+.tool-card-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+  min-width: 0;
+}
+.tool-card-key {
+  color: var(--muted);
+  font-size: 12px;
+  flex-shrink: 0;
+  width: 34px;
+}
+.tool-card-row .set-proj-path {
+  flex: 1;
+}
+.tool-card-modes-title {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.3px;
+  color: var(--muted);
+  text-transform: uppercase;
+  margin-bottom: 8px;
+}
+.tool-modes {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 8px;
+}
+.tool-mode {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 8px 10px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.tool-mode-icon {
+  font-size: 15px;
+  line-height: 1.3;
+  flex-shrink: 0;
+}
+.tool-mode-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.tool-mode-label {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text);
+}
+.tool-mode-desc {
+  font-size: 11px;
+  color: var(--muted);
+  line-height: 1.35;
+}
+
+/* card: how the live node looks */
+.tool-nodeinfo {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+.tool-nodeinfo-mock {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: 0 0 auto;
+}
+.tool-nodeinfo-box {
+  font-size: 9px;
+  color: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  width: 30px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+}
+.tool-nodeinfo-box.out {
+  color: var(--bg);
+  background: var(--accent);
+  border-color: var(--accent);
+}
+.tool-nodeinfo-arrow {
+  color: var(--muted);
+  font-size: 11px;
+}
+.tool-nodeinfo-mini {
+  font-size: 9px;
+  color: var(--muted);
+  letter-spacing: 1px;
+}
+.tool-nodeinfo-text {
+  font-size: 11px;
+  color: var(--muted);
+  line-height: 1.45;
 }
 
 /* launch update pill */

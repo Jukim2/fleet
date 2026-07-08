@@ -26,24 +26,34 @@ export type ToolOption = {
 };
 
 export type ToolMode = {
-  id: string; // --tool value
+  id: string; // --tool value (or {mode} in a custom args template)
   label: string;
   desc: string;
   icon: string;
+  /** per-mode launch program — overrides the manifest's. Optional. */
+  program?: string;
+  /** per-mode argv template with placeholders {input} {outDir} {mode} {options}.
+   *  Absent = the legacy shape `[…scriptArgs, <input>, --tool <mode>, …opts, --out <outDir>]`. */
+  args?: string[];
   options: ToolOption[];
 };
 
 export type ToolManifest = {
   id: string;
   name: string;
-  /** what to run, relative to the tool's root dir */
-  program: string;
-  scriptArgs: string[];
-  /** matches a Bash PreToolUse detail when a claude session drives this tool;
-   *  absent = no live-node detection for this tool */
-  detect?: RegExp;
-  /** output subfolder the CLI writes into (under the input dir) */
+  /** one-line description of what the tool is (optional). */
+  desc?: string;
+  /** default launch program relative to the tool root. Optional: a detect-only
+   *  tool (observed, not Fleet-launched) needs none. A mode may override it. */
+  program?: string;
+  /** legacy fixed args placed before <input> (optional). */
+  scriptArgs?: string[];
+  /** one OR MORE regexes recognizing this tool in a claude Bash/Skill command
+   *  (universal detection — any command shape). Absent = no live-node detection. */
+  detect?: RegExp | RegExp[];
+  /** output subfolder the CLI writes into (under the input dir). */
   outDirName: string;
+  /** modes describe what the tool can do (shown as capabilities). Optional. */
   modes: ToolMode[];
 };
 
@@ -260,21 +270,27 @@ export function parseToolManifest(raw: unknown): ToolManifest {
   const id = str("id");
   if (!/^[a-z0-9-]+$/.test(id)) fail(`"id"는 소문자·숫자·하이픈만 가능해요 (현재: ${id})`);
   const name = str("name");
-  const program = str("program");
-  const scriptArgs = Array.isArray(j.scriptArgs) ? j.scriptArgs.map(String) : [];
+  const desc = str("desc", false) || undefined;
+  const program = str("program", false) || undefined;
+  const scriptArgs = Array.isArray(j.scriptArgs) ? j.scriptArgs.map(String) : undefined;
   const outDirName = str("outDirName", false) || "_out";
-  let detect: RegExp | undefined;
-  if (typeof j.detect === "string" && j.detect) {
+  // detect: string | string[] → RegExp[] (universal, multi-CLI)
+  const detectRaw = Array.isArray(j.detect) ? j.detect : j.detect ? [j.detect] : [];
+  const detect: RegExp[] = [];
+  for (const d of detectRaw) {
+    if (typeof d !== "string" || !d) continue;
     try {
-      detect = new RegExp(j.detect, "i");
+      detect.push(new RegExp(d, "i"));
     } catch {
-      fail(`"detect" 정규식이 잘못됐어요: ${j.detect}`);
+      fail(`"detect" 정규식이 잘못됐어요: ${d}`);
     }
   }
-  if (!Array.isArray(j.modes) || j.modes.length === 0) fail(`"modes" 배열이 비어있어요`);
+  const modesRaw = Array.isArray(j.modes) ? j.modes : [];
+  if (detect.length === 0 && modesRaw.length === 0)
+    fail(`"detect"(감지 패턴) 또는 "modes"(실행 모드) 중 하나는 있어야 해요`);
   const OPT_KINDS = ["value", "flag", "negFlag"];
   const OPT_TYPES = ["select", "number", "text", "bool", "color"];
-  const modes: ToolMode[] = (j.modes as unknown[]).map((m, i) => {
+  const modes: ToolMode[] = modesRaw.map((m, i) => {
     if (typeof m !== "object" || m === null) fail(`modes[${i}]가 객체가 아니에요`);
     const mm = m as Record<string, unknown>;
     const mid = typeof mm.id === "string" && mm.id ? mm.id : fail(`modes[${i}].id가 필요해요`);
@@ -309,10 +325,21 @@ export function parseToolManifest(raw: unknown): ToolManifest {
       label: typeof mm.label === "string" && mm.label ? mm.label : (mid as string),
       desc: typeof mm.desc === "string" ? mm.desc : "",
       icon: typeof mm.icon === "string" && mm.icon ? mm.icon : "⚙",
+      program: typeof mm.program === "string" && mm.program ? mm.program : undefined,
+      args: Array.isArray(mm.args) ? mm.args.map(String) : undefined,
       options,
     };
   });
-  return { id, name, program, scriptArgs, detect, outDirName, modes };
+  return {
+    id,
+    name,
+    desc,
+    program,
+    scriptArgs,
+    detect: detect.length ? detect : undefined,
+    outDirName,
+    modes,
+  };
 }
 
 /** built-ins + user-connected custom tools (custom wins on id collision) */
@@ -329,43 +356,8 @@ export function mergeManifests(customTools?: Record<string, unknown>): Record<st
   return all;
 }
 
-/** default form values for a mode */
-export function defaultValues(mode: ToolMode): ToolValues {
-  const v: ToolValues = {};
-  for (const o of mode.options) v[o.key] = o.default;
-  return v;
-}
-
-/** manifest + mode + form values + input folder → the full argv */
-export function buildToolArgs(
-  manifest: ToolManifest,
-  modeId: string,
-  inputDir: string,
-  values: ToolValues,
-): string[] {
-  const mode = manifest.modes.find((m) => m.id === modeId);
-  const args = [...manifest.scriptArgs, inputDir, "--tool", modeId];
-  for (const o of mode?.options ?? []) {
-    const v = values[o.key] ?? o.default;
-    if (o.kind === "flag") {
-      if (v === true) args.push(o.flag);
-    } else if (o.kind === "negFlag") {
-      if (v === false) args.push(o.flag);
-    } else {
-      const s = String(v).trim();
-      if (o.optional && (s === "" || (o.type === "number" && Number(s) === 0 && o.default === 0)))
-        continue;
-      // slice: --grid only matters when auto-detect is off
-      if (manifest.id === "spriteforge" && modeId === "slice" && o.key === "grid" && values.auto)
-        continue;
-      args.push(o.flag, s);
-    }
-  }
-  args.push("--out", manifest.outDirName);
-  return args;
-}
-
-/** where this run's results land (the CLI writes into <input>/<outDirName>) */
+/** join an input dir with a tool's output subfolder (used by the live node's
+ *  best-effort before→after preview of what a claude session ran). */
 export function toolOutDir(manifest: ToolManifest, inputDir: string): string {
   const sep = inputDir.includes("\\") ? "\\" : "/";
   return inputDir.replace(/[\\/]+$/, "") + sep + manifest.outDirName;
@@ -378,7 +370,10 @@ export function detectToolUse(
   detail: string,
 ): ToolManifest | null {
   if (toolName !== "Bash" && toolName !== "Skill") return null;
-  for (const m of Object.values(manifests)) if (m.detect?.test(detail)) return m;
+  for (const m of Object.values(manifests)) {
+    const pats = Array.isArray(m.detect) ? m.detect : m.detect ? [m.detect] : [];
+    if (pats.some((re) => re.test(detail))) return m;
+  }
   return null;
 }
 

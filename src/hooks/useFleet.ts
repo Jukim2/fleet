@@ -21,23 +21,8 @@ import { clearPlan, plannerPrompt, readPlan } from "../api/planner";
 import { clearPreset, presetGenPrompt, readPreset, GeneratedPreset } from "../api/presetgen";
 import { presetBody } from "../lib/presets";
 import { describeActivity } from "../lib/activity";
-import {
-  buildToolArgs,
-  detectToolUse,
-  mergeManifests,
-  parseToolLine,
-  parseToolManifest,
-  toolOutDir,
-  ToolValues,
-} from "../lib/tools";
-import {
-  importToolFiles,
-  killToolJob,
-  readToolManifest,
-  spawnToolJob,
-  ToolJobExit,
-  ToolJobOutput,
-} from "../api/tools";
+import { detectToolUse, mergeManifests, parseToolManifest } from "../lib/tools";
+import { readToolManifest } from "../api/tools";
 import {
   gitIsRepo,
   wtAdd,
@@ -94,11 +79,9 @@ import {
   TaskStatus,
   Terminal,
   TermStatus,
-  ToolJob,
   LiveCanvas,
   LiveRect,
   LiveToolUse,
-  SavedToolRun,
   WebTab,
   WebArtifact,
   emptyConfig,
@@ -241,6 +224,22 @@ function migratePresets(c: FleetConfig): {
   return { presets, presetBodies };
 }
 
+/** The prompt seeded into an "AI 툴 등록" session — the fleet-tool.json contract
+ *  + "inspect this CLI and write the manifest here". Kept in sync with
+ *  docs/EXTERNAL_TOOLS.md and parseToolManifest. */
+const aiToolPrompt = (folder: string) =>
+  `이 폴더의 CLI 툴을 Fleet이 감지할 수 있게 \`fleet-tool.json\`을 이 폴더(${folder}) 루트에 작성해줘.\n\n` +
+  `먼저 이 툴이 뭔지 파악해: README, package.json, \`--help\` 출력, 실행 스크립트를 살펴보고 어떤 명령/하위명령이 있는지 확인해. 명령이 여러 개면 다 담아도 돼.\n\n` +
+  `Fleet은 이 툴을 직접 실행하지 않아 — claude가 실행하는 명령을 hook으로 보고 감지만 해. 그래서 실행 폼·옵션 스키마는 필요 없어.\n\n` +
+  `fleet-tool.json 규격:\n` +
+  `- id: 소문자·숫자·하이픈, 전역 고유 (필수)\n` +
+  `- name: 표시명 (필수)\n` +
+  `- detect: 이 툴을 실행하는 명령을 알아볼 정규식 — 문자열 하나 또는 배열(여러 CLI를 한 툴로). 예: ["cli\\\\.mjs", "mytool (build|pack)"] (필수)\n` +
+  `- desc: (선택) 한 줄 소개\n` +
+  `- outDirName: (선택, 기본 "_out") 이 툴이 결과물을 <입력>/이폴더 아래에 쓰면, Fleet이 노드에 입력→결과 썸네일을 띄워줘\n` +
+  `- modes: (선택) 이 툴이 뭘 하는지 설명용. 각 = { id, label(한국어), desc, icon } — 실행엔 안 쓰임\n\n` +
+  `파일을 저장만 하면 Fleet이 자동 감지해서 연결할게. SpriteForge의 fleet-tool.json이 좋은 예시야.`;
+
 /** Central store: owns config + per-session UI state and every mutation. */
 export function useFleet() {
   const [config, setConfig] = useState<FleetConfig>(emptyConfig);
@@ -260,10 +259,6 @@ export function useFleet() {
   const [artifacts, setArtifacts] = useState<WebArtifact[]>([]);
   /** live "what is this session doing" line per terminal (from PreToolUse) */
   const [activity, setActivity] = useState<Record<string, string>>({});
-  /** external-tool jobs Fleet launched directly (command center), by job id */
-  const [toolJobs, setToolJobs] = useState<Record<string, ToolJob>>({});
-  const toolJobsRef = useRef(toolJobs);
-  toolJobsRef.current = toolJobs;
   /** a known external tool a claude session is driving right now, per terminal */
   const [liveTool, setLiveTool] = useState<Record<string, LiveToolUse>>({});
   /** terminals explicitly woken from the live canvas — spawns them even when
@@ -449,6 +444,14 @@ export function useFleet() {
     // PTY exit → "stopped").
     if (hookDriven.current[id] && status !== "stopped") return;
     if (status === "busy") awaiting.current[id] = false;
+    // A dead PTY has no pinned tool node to keep around.
+    if (status === "stopped")
+      setLiveTool((t) => {
+        if (!(id in t)) return t;
+        const n = { ...t };
+        delete n[id];
+        return n;
+      });
     setStatuses((s) => ({ ...s, [id]: status }));
   };
   const patchLayout = (projectId: string, fn: (n: LayoutNode | null) => LayoutNode | null) =>
@@ -1504,16 +1507,14 @@ export function useFleet() {
     hookDriven.current[termId] = true;
     if (status === "busy") awaiting.current[termId] = false;
     // Once a turn ends (idle), there's no live activity to show anymore.
+    // NOTE: liveTool is intentionally NOT cleared here — a tool a session ran
+    // stays pinned as a node (so you can review it / its output) until the user
+    // dismisses it (X) or the terminal stops. Only the transient activity line
+    // clears on idle.
     if (status === "idle") {
       setActivity((a) => {
         if (!(termId in a)) return a;
         const n = { ...a };
-        delete n[termId];
-        return n;
-      });
-      setLiveTool((t) => {
-        if (!(termId in t)) return t;
-        const n = { ...t };
         delete n[termId];
         return n;
       });
@@ -1553,52 +1554,9 @@ export function useFleet() {
       "web-artifact",
       (e) => onWebArtifact(e.payload),
     );
-    // External-tool job streams: fold each output line into the job (rolling
-    // tail + progress counters), and settle status on exit.
-    const unTool = listen<ToolJobOutput>("tool-job-output", (e) => {
-      const { jobId, line } = e.payload;
-      setToolJobs((jobs) => {
-        const j = jobs[jobId];
-        if (!j) return jobs;
-        const p = parseToolLine(line);
-        return {
-          ...jobs,
-          [jobId]: {
-            ...j,
-            lines: [...j.lines.slice(-119), line],
-            total: p.total ?? j.total,
-            done: j.done + (p.done ? 1 : 0),
-            failed: j.failed + (p.failed ? 1 : 0),
-          },
-        };
-      });
-    });
-    const unToolExit = listen<ToolJobExit>("tool-job-exit", (e) => {
-      const { jobId, code, killed } = e.payload;
-      const j = toolJobsRef.current[jobId];
-      setToolJobs((jobs) =>
-        jobs[jobId]
-          ? {
-              ...jobs,
-              [jobId]: {
-                ...jobs[jobId],
-                status: killed ? "killed" : code === 0 ? "done" : "error",
-                endedAt: Date.now(),
-              },
-            }
-          : jobs,
-      );
-      if (j && !killed) {
-        const name = toolManifestsRef.current[j.manifestId]?.name ?? j.manifestId;
-        if (code === 0) pushToast("ok", `${name} — ${j.done}개 처리 완료`);
-        else pushToast("err", `${name} — 실패 (종료 코드 ${code})`);
-      }
-    });
     return () => {
       un.then((f) => f());
       unArt.then((f) => f());
-      unTool.then((f) => f());
-      unToolExit.then((f) => f());
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -1968,87 +1926,16 @@ export function useFleet() {
     wakeTerm(id);
   };
 
-  // --- external tools (command center) ---------------------------------------
+  // --- external tools (detection only) ---------------------------------------
 
-  /** Remember where an external tool lives (picked once, persisted). */
-  const setToolRoot = (manifestId: string, path: string) =>
-    setConfig((c) => ({ ...c, toolRoots: { ...(c.toolRoots ?? {}), [manifestId]: path } }));
-
-  /** Launch an external tool directly (no claude session): build the argv from
-   *  the manifest, spawn via Rust, and track it as a live ToolJob. Also saves
-   *  the run config as the project's preset so re-runs are one click. */
-  const runTool = async (
-    projectId: string,
-    manifestId: string,
-    mode: string,
-    inputDir: string,
-    values: ToolValues,
-  ): Promise<string | null> => {
-    const manifest = toolManifestsRef.current[manifestId];
-    const root = configRef.current.toolRoots?.[manifestId];
-    if (!manifest || !root) return null;
-    const jobId = uid();
-    const job: ToolJob = {
-      id: jobId,
-      projectId,
-      manifestId,
-      mode,
-      inputDir,
-      outDir: toolOutDir(manifest, inputDir),
-      status: "running",
-      lines: [],
-      done: 0,
-      failed: 0,
-      startedAt: Date.now(),
-    };
-    setToolJobs((js) => ({ ...js, [jobId]: job }));
-    const saved: SavedToolRun = { mode, inputDir, values };
-    setConfig((c) => ({
-      ...c,
-      toolPresets: {
-        ...(c.toolPresets ?? {}),
-        [projectId]: { ...(c.toolPresets?.[projectId] ?? {}), [manifestId]: saved },
-      },
-    }));
-    try {
-      await spawnToolJob(jobId, manifest.program, buildToolArgs(manifest, mode, inputDir, values), root);
-    } catch (e) {
-      setToolJobs((js) => ({
-        ...js,
-        [jobId]: { ...js[jobId], status: "error", endedAt: Date.now(), lines: [String(e)] },
-      }));
-      pushToast("err", `${manifest.name} 실행 실패 — ${e}`);
-    }
-    return jobId;
-  };
-
-  const cancelToolJob = (jobId: string) => {
-    killToolJob(jobId).catch(() => {});
-  };
-
-  const dismissToolJob = (jobId: string) =>
-    setToolJobs((js) => {
-      const n = { ...js };
-      delete n[jobId];
+  /** Remove a pinned live-tool node (the one a claude session drove) by hand. */
+  const dismissLiveTool = (termId: string) =>
+    setLiveTool((t) => {
+      if (!(termId in t)) return t;
+      const n = { ...t };
+      delete n[termId];
       return n;
     });
-
-  /** Copy selected result files into the job's project (destSub is relative to
-   *  the project root) — the "←" back-into-the-project arrow. */
-  const importToolResults = async (jobId: string, files: string[], destSub: string) => {
-    const j = toolJobsRef.current[jobId];
-    const project = configRef.current.projects.find((p) => p.id === j?.projectId);
-    if (!j || !project || !files.length) return;
-    const sep = project.path.includes("\\") ? "\\" : "/";
-    const dest =
-      project.path.replace(/[\\/]+$/, "") + sep + destSub.replace(/^[\\/]+/, "").replace(/\//g, sep);
-    try {
-      const n = await importToolFiles(files, dest);
-      pushToast("ok", `${n}개 결과물 → ${project.name}/${destSub}`);
-    } catch (e) {
-      pushToast("err", `가져오기 실패 — ${e}`);
-    }
-  };
 
   /** Connect a new tool folder: read + validate its fleet-tool.json (the
    *  integration policy), persist the manifest and remember the root. */
@@ -2077,6 +1964,56 @@ export function useFleet() {
       delete customTools[manifestId];
       return { ...c, customTools };
     });
+
+  /** Scan every registered project folder for an unconnected `fleet-tool.json`
+   *  (the project *is* a tool). Returns the ones that parse cleanly and aren't
+   *  already connected — for the settings "발견됨 — 연결" suggestions. */
+  const scanProjectTools = async (): Promise<{ root: string; name: string; id: string }[]> => {
+    const connected = new Set(Object.values(configRef.current.toolRoots ?? {}));
+    const out: { root: string; name: string; id: string }[] = [];
+    for (const proj of configRef.current.projects) {
+      if (connected.has(proj.path)) continue;
+      try {
+        const m = parseToolManifest(JSON.parse(await readToolManifest(proj.path)));
+        if (!configRef.current.customTools?.[m.id])
+          out.push({ root: proj.path, name: m.name, id: m.id });
+      } catch {
+        /* no/invalid fleet-tool.json here — skip */
+      }
+    }
+    return out;
+  };
+
+  /** Register a tool with AI: spawn a claude session in the tool's folder, seed
+   *  it with the fleet-tool.json spec + "inspect this CLI and write it", then
+   *  poll the folder and auto-connect the moment a valid manifest appears. Uses
+   *  a normal subscription session (no API billing) — Fleet's whole premise. */
+  const registerToolViaAI = (folder: string) => {
+    const projectId = activeProjectId ?? configRef.current.projects[0]?.id ?? null;
+    if (!projectId) {
+      pushToast("err", "먼저 프로젝트를 하나 추가하세요");
+      return;
+    }
+    const id = spawnWorktreeTerminal(projectId, "claude", "AI 툴 등록", folder);
+    revealTerm(projectId, id);
+    selectProject(projectId);
+    wakeTerm(id);
+    autoSubmit.current[id] = { text: aiToolPrompt(folder), sent: false };
+    pushToast("info", "AI가 fleet-tool.json을 작성 중… 완료되면 자동 연결돼요");
+    let tries = 0;
+    const timer = window.setInterval(async () => {
+      if (++tries > 100 || Object.values(configRef.current.toolRoots ?? {}).includes(folder)) {
+        window.clearInterval(timer);
+        return;
+      }
+      try {
+        parseToolManifest(JSON.parse(await readToolManifest(folder))); // throws until valid
+        if (await addCustomTool(folder)) window.clearInterval(timer);
+      } catch {
+        /* not written / not valid yet — keep waiting quietly */
+      }
+    }, 3000);
+  };
 
   // --- 라이브 캔버스 layout (frames / node offsets / viewport), persisted -----
 
@@ -2157,15 +2094,12 @@ export function useFleet() {
     waitingByProject,
     activity,
     liveTool,
-    toolJobs,
     toolManifests,
-    runTool,
-    cancelToolJob,
-    dismissToolJob,
-    importToolResults,
-    setToolRoot,
+    dismissLiveTool,
     addCustomTool,
     removeCustomTool,
+    scanProjectTools,
+    registerToolViaAI,
     placeLiveFrames,
     removeLiveFrame,
     moveLiveNode,
