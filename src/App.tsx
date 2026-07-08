@@ -3,6 +3,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import ProjectRail from "./features/projects/ProjectRail";
 import ProjectView from "./features/terminals/ProjectView";
+import TermPortals from "./features/terminals/TermPortals";
 import CommandPalette from "./features/blocks/CommandPalette";
 import Drawer from "./features/drawer/Drawer";
 import AttentionPeek, { AttentionItem } from "./features/attention/AttentionPeek";
@@ -243,16 +244,25 @@ export default function App() {
                   f.splitWithTerm(p.id, paneId, dir, before, tid)
                 }
                 onMovePane={(source, target, zone) => f.movePane(p.id, source, target, zone)}
-                onStatus={f.setStatus}
                 onOpenWeb={() => setWebOpen(true)}
                 onOpenPlan={() => setPlanOpen(true)}
-                onNotice={f.pushToast}
                 presetsOpen={drawerOpen}
                 onTogglePresets={() => setDrawerOpen((o) => !o)}
                 wtActive={f.wtRuns[p.id] ? wtProgress(f.wtRuns[p.id]) : undefined}
               />
             ))
         )}
+        {/* Every terminal's xterm lives here exactly once (portaled into its
+            dock container) and moves between pane floats and live-canvas nodes
+            without remounting. */}
+        <TermPortals
+          terminals={f.config.terminals}
+          projects={f.config.projects}
+          visited={f.visited}
+          woken={f.woken}
+          onStatus={f.setStatus}
+          onNotice={f.pushToast}
+        />
       </main>
 
       <div className="drawer-slot" aria-hidden={!drawerOpen}>
@@ -332,6 +342,37 @@ export default function App() {
           onStopBoardRun={() => f.stopBoardRun(activeProject.id)}
           onClearWtLastRun={() => f.clearWtLastRun(activeProject.id)}
           onClearWtMsg={() => f.clearWtMsg(activeProject.id)}
+          live={{
+            projects: f.config.projects,
+            terminals: f.config.terminals,
+            statuses: f.statuses,
+            activity: f.activity,
+            liveTool: f.liveTool,
+            toolJobs: f.toolJobs,
+            manifests: f.toolManifests,
+            toolRoots: f.config.toolRoots ?? {},
+            toolPresets: f.config.toolPresets ?? {},
+            liveCanvas: f.config.liveCanvas,
+            onPlaceFrames: f.placeLiveFrames,
+            onRemoveFrame: f.removeLiveFrame,
+            onMoveNode: f.moveLiveNode,
+            onSetCanvasView: f.setLiveCanvasView,
+            onSetSideW: f.setLiveSideW,
+            onNewSession: (pid) => f.wakeTerm(f.newTerm(pid, "claude", "Claude")),
+            onNewShell: (pid) => f.wakeTerm(f.newTerm(pid, "", "셸")),
+            onWakeTerm: f.wakeTerm,
+            onResumeSession: f.resumeInto,
+            onCloseTerm: f.closeTerm,
+            onJumpTerm: (pid, tid) => {
+              f.jumpToTerm(pid, tid);
+              setPlanOpen(false);
+            },
+            onSetToolRoot: f.setToolRoot,
+            onRunTool: f.runTool,
+            onCancelTool: f.cancelToolJob,
+            onDismissTool: f.dismissToolJob,
+            onImportFiles: f.importToolResults,
+          }}
           onClose={() => setPlanOpen(false)}
         />
       )}
@@ -385,6 +426,12 @@ export default function App() {
           projects={f.config.projects}
           onRelink={relinkProject}
           onReinstallHooks={ensureHookInstalled}
+          manifests={f.toolManifests}
+          toolRoots={f.config.toolRoots ?? {}}
+          customToolIds={Object.keys(f.config.customTools ?? {})}
+          onAddCustomTool={f.addCustomTool}
+          onRemoveCustomTool={f.removeCustomTool}
+          onSetToolRoot={f.setToolRoot}
         />
       )}
 

@@ -22,6 +22,23 @@ import { clearPreset, presetGenPrompt, readPreset, GeneratedPreset } from "../ap
 import { presetBody } from "../lib/presets";
 import { describeActivity } from "../lib/activity";
 import {
+  buildToolArgs,
+  detectToolUse,
+  mergeManifests,
+  parseToolLine,
+  parseToolManifest,
+  toolOutDir,
+  ToolValues,
+} from "../lib/tools";
+import {
+  importToolFiles,
+  killToolJob,
+  readToolManifest,
+  spawnToolJob,
+  ToolJobExit,
+  ToolJobOutput,
+} from "../api/tools";
+import {
   gitIsRepo,
   wtAdd,
   wtCommit,
@@ -77,6 +94,11 @@ import {
   TaskStatus,
   Terminal,
   TermStatus,
+  ToolJob,
+  LiveCanvas,
+  LiveRect,
+  LiveToolUse,
+  SavedToolRun,
   WebTab,
   WebArtifact,
   emptyConfig,
@@ -238,6 +260,20 @@ export function useFleet() {
   const [artifacts, setArtifacts] = useState<WebArtifact[]>([]);
   /** live "what is this session doing" line per terminal (from PreToolUse) */
   const [activity, setActivity] = useState<Record<string, string>>({});
+  /** external-tool jobs Fleet launched directly (command center), by job id */
+  const [toolJobs, setToolJobs] = useState<Record<string, ToolJob>>({});
+  const toolJobsRef = useRef(toolJobs);
+  toolJobsRef.current = toolJobs;
+  /** a known external tool a claude session is driving right now, per terminal */
+  const [liveTool, setLiveTool] = useState<Record<string, LiveToolUse>>({});
+  /** terminals explicitly woken from the live canvas — spawns them even when
+   *  their project hasn't been visited yet (TermPortals mount gating) */
+  const [woken, setWoken] = useState<Record<string, boolean>>({});
+  /** built-in + user-connected tool manifests (custom wins on id collision).
+   *  Ref-mirrored because the once-mounted hook listener reads it. */
+  const toolManifests = useMemo(() => mergeManifests(config.customTools), [config.customTools]);
+  const toolManifestsRef = useRef(toolManifests);
+  toolManifestsRef.current = toolManifests;
   const genTimer = useRef<number | null>(null);
   const loaded = useRef(false);
 
@@ -283,6 +319,7 @@ export function useFleet() {
   const wtFinal = useRef<Record<string, boolean>>({}); // finalize-once guard
   const wtLastLog = useRef<Record<string, string>>({}); // last logged phase summary
   const wtTranscript = useRef<Record<string, string>>({}); // termId -> claude transcript path
+  const seenSession = useRef<Record<string, string>>({}); // termId -> last session id persisted
   const setWtRun = (projectId: string, run: WtRun | null) => {
     setWtRuns((r) => {
       const next = { ...r };
@@ -515,6 +552,7 @@ export function useFleet() {
       setFocusedPane((fp) => ({ ...fp, [projectId]: leaf.id }));
     }
     setConfig((c) => ({ ...c, terminals: [...c.terminals, term] }));
+    return term.id;
   };
   const activateTerm = (projectId: string, termId: string) => {
     const focus = focusOf(projectId);
@@ -1416,11 +1454,36 @@ export function useFleet() {
     // step can be imported into the project's resume list.
     if (h.transcriptPath) wtTranscript.current[termId] = h.transcriptPath;
 
+    // Persist the live claude session id on the terminal so a Fleet restart
+    // resumes this conversation rather than starting a fresh one. Only write
+    // when it actually changes (once per session) to avoid churning config.
+    if (h.sessionId && seenSession.current[termId] !== h.sessionId) {
+      seenSession.current[termId] = h.sessionId;
+      setConfig((c) => {
+        const t = c.terminals.find((x) => x.id === termId);
+        if (!t || t.resumeId === h.sessionId) return c;
+        return {
+          ...c,
+          terminals: c.terminals.map((x) =>
+            x.id === termId ? { ...x, resumeId: h.sessionId } : x,
+          ),
+        };
+      });
+    }
+
     // PreToolUse carries the live "what is it doing" line; update & keep going.
     // A fresh prompt (UserPromptSubmit) clears it so we don't show a stale tool.
     if (event === "PreToolUse") {
       const label = describeActivity(h.toolName, h.toolDetail);
       if (label) setActivity((a) => (a[termId] === label ? a : { ...a, [termId]: label }));
+      // A known external tool (SpriteForge, …) being driven from this session →
+      // the live view hangs a tool node off this claude node.
+      const m = detectToolUse(toolManifestsRef.current, h.toolName, h.toolDetail);
+      if (m)
+        setLiveTool((t) => ({
+          ...t,
+          [termId]: { manifestId: m.id, detail: h.toolDetail, at: Date.now() },
+        }));
     } else if (event === "UserPromptSubmit") {
       setActivity((a) => {
         if (!(termId in a)) return a;
@@ -1441,13 +1504,20 @@ export function useFleet() {
     hookDriven.current[termId] = true;
     if (status === "busy") awaiting.current[termId] = false;
     // Once a turn ends (idle), there's no live activity to show anymore.
-    if (status === "idle")
+    if (status === "idle") {
       setActivity((a) => {
         if (!(termId in a)) return a;
         const n = { ...a };
         delete n[termId];
         return n;
       });
+      setLiveTool((t) => {
+        if (!(termId in t)) return t;
+        const n = { ...t };
+        delete n[termId];
+        return n;
+      });
+    }
     setStatuses((s) => (s[termId] === status ? s : { ...s, [termId]: status }));
 
     const cfg = configRef.current;
@@ -1483,9 +1553,52 @@ export function useFleet() {
       "web-artifact",
       (e) => onWebArtifact(e.payload),
     );
+    // External-tool job streams: fold each output line into the job (rolling
+    // tail + progress counters), and settle status on exit.
+    const unTool = listen<ToolJobOutput>("tool-job-output", (e) => {
+      const { jobId, line } = e.payload;
+      setToolJobs((jobs) => {
+        const j = jobs[jobId];
+        if (!j) return jobs;
+        const p = parseToolLine(line);
+        return {
+          ...jobs,
+          [jobId]: {
+            ...j,
+            lines: [...j.lines.slice(-119), line],
+            total: p.total ?? j.total,
+            done: j.done + (p.done ? 1 : 0),
+            failed: j.failed + (p.failed ? 1 : 0),
+          },
+        };
+      });
+    });
+    const unToolExit = listen<ToolJobExit>("tool-job-exit", (e) => {
+      const { jobId, code, killed } = e.payload;
+      const j = toolJobsRef.current[jobId];
+      setToolJobs((jobs) =>
+        jobs[jobId]
+          ? {
+              ...jobs,
+              [jobId]: {
+                ...jobs[jobId],
+                status: killed ? "killed" : code === 0 ? "done" : "error",
+                endedAt: Date.now(),
+              },
+            }
+          : jobs,
+      );
+      if (j && !killed) {
+        const name = toolManifestsRef.current[j.manifestId]?.name ?? j.manifestId;
+        if (code === 0) pushToast("ok", `${name} — ${j.done}개 처리 완료`);
+        else pushToast("err", `${name} — 실패 (종료 코드 ${code})`);
+      }
+    });
     return () => {
       un.then((f) => f());
       unArt.then((f) => f());
+      unTool.then((f) => f());
+      unToolExit.then((f) => f());
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -1830,6 +1943,174 @@ export function useFleet() {
     removeSession(s);
   };
 
+  /** 라이브 캔버스의 "불러오기": make a dormant terminal live. Never-spawned
+   *  terminals get mounted (TermPortals gating); a terminal whose PTY died is
+   *  relaunched in place (Terminal listens for fleet-respawn). */
+  const wakeTerm = (termId: string) => {
+    setWoken((w) => (w[termId] ? w : { ...w, [termId]: true }));
+    if (statusesRef.current[termId] === "stopped")
+      window.dispatchEvent(new CustomEvent("fleet-respawn", { detail: termId }));
+  };
+
+  /** Resume a past claude conversation into a specific project (canvas flow —
+   *  `resume` above works on the active project only). Reuses an existing
+   *  resume tab for the same transcript instead of spawning a duplicate. */
+  const resumeInto = (projectId: string, s: ClaudeSession) => {
+    const existing = configRef.current.terminals.find(
+      (t) => t.projectId === projectId && /--resume (\S+)/.exec(t.startup)?.[1] === s.id,
+    );
+    if (existing) {
+      wakeTerm(existing.id);
+      return;
+    }
+    const label = s.summary.replace(/\s+/g, " ").trim().slice(0, 24);
+    const id = newTerm(projectId, `claude --resume ${s.id}`, "Claude ↺", label || "Claude ↺");
+    wakeTerm(id);
+  };
+
+  // --- external tools (command center) ---------------------------------------
+
+  /** Remember where an external tool lives (picked once, persisted). */
+  const setToolRoot = (manifestId: string, path: string) =>
+    setConfig((c) => ({ ...c, toolRoots: { ...(c.toolRoots ?? {}), [manifestId]: path } }));
+
+  /** Launch an external tool directly (no claude session): build the argv from
+   *  the manifest, spawn via Rust, and track it as a live ToolJob. Also saves
+   *  the run config as the project's preset so re-runs are one click. */
+  const runTool = async (
+    projectId: string,
+    manifestId: string,
+    mode: string,
+    inputDir: string,
+    values: ToolValues,
+  ): Promise<string | null> => {
+    const manifest = toolManifestsRef.current[manifestId];
+    const root = configRef.current.toolRoots?.[manifestId];
+    if (!manifest || !root) return null;
+    const jobId = uid();
+    const job: ToolJob = {
+      id: jobId,
+      projectId,
+      manifestId,
+      mode,
+      inputDir,
+      outDir: toolOutDir(manifest, inputDir),
+      status: "running",
+      lines: [],
+      done: 0,
+      failed: 0,
+      startedAt: Date.now(),
+    };
+    setToolJobs((js) => ({ ...js, [jobId]: job }));
+    const saved: SavedToolRun = { mode, inputDir, values };
+    setConfig((c) => ({
+      ...c,
+      toolPresets: {
+        ...(c.toolPresets ?? {}),
+        [projectId]: { ...(c.toolPresets?.[projectId] ?? {}), [manifestId]: saved },
+      },
+    }));
+    try {
+      await spawnToolJob(jobId, manifest.program, buildToolArgs(manifest, mode, inputDir, values), root);
+    } catch (e) {
+      setToolJobs((js) => ({
+        ...js,
+        [jobId]: { ...js[jobId], status: "error", endedAt: Date.now(), lines: [String(e)] },
+      }));
+      pushToast("err", `${manifest.name} 실행 실패 — ${e}`);
+    }
+    return jobId;
+  };
+
+  const cancelToolJob = (jobId: string) => {
+    killToolJob(jobId).catch(() => {});
+  };
+
+  const dismissToolJob = (jobId: string) =>
+    setToolJobs((js) => {
+      const n = { ...js };
+      delete n[jobId];
+      return n;
+    });
+
+  /** Copy selected result files into the job's project (destSub is relative to
+   *  the project root) — the "←" back-into-the-project arrow. */
+  const importToolResults = async (jobId: string, files: string[], destSub: string) => {
+    const j = toolJobsRef.current[jobId];
+    const project = configRef.current.projects.find((p) => p.id === j?.projectId);
+    if (!j || !project || !files.length) return;
+    const sep = project.path.includes("\\") ? "\\" : "/";
+    const dest =
+      project.path.replace(/[\\/]+$/, "") + sep + destSub.replace(/^[\\/]+/, "").replace(/\//g, sep);
+    try {
+      const n = await importToolFiles(files, dest);
+      pushToast("ok", `${n}개 결과물 → ${project.name}/${destSub}`);
+    } catch (e) {
+      pushToast("err", `가져오기 실패 — ${e}`);
+    }
+  };
+
+  /** Connect a new tool folder: read + validate its fleet-tool.json (the
+   *  integration policy), persist the manifest and remember the root. */
+  const addCustomTool = async (root: string): Promise<boolean> => {
+    try {
+      const text = await readToolManifest(root);
+      const raw = JSON.parse(text) as unknown;
+      const m = parseToolManifest(raw); // throws with a Korean message
+      setConfig((c) => ({
+        ...c,
+        customTools: { ...(c.customTools ?? {}), [m.id]: raw },
+        toolRoots: { ...(c.toolRoots ?? {}), [m.id]: root },
+      }));
+      pushToast("ok", `툴 연결됨 — ${m.name} (모드 ${m.modes.length}개)`);
+      return true;
+    } catch (e) {
+      pushToast("err", e instanceof Error ? e.message : String(e));
+      return false;
+    }
+  };
+
+  /** Disconnect a user-connected tool (built-ins can't be removed). */
+  const removeCustomTool = (manifestId: string) =>
+    setConfig((c) => {
+      const customTools = { ...(c.customTools ?? {}) };
+      delete customTools[manifestId];
+      return { ...c, customTools };
+    });
+
+  // --- 라이브 캔버스 layout (frames / node offsets / viewport), persisted -----
+
+  const patchLiveCanvas = (patch: (lc: LiveCanvas) => LiveCanvas) =>
+    setConfig((c) => ({ ...c, liveCanvas: patch(c.liveCanvas ?? {}) }));
+
+  /** Place (or move) a project frame on the canvas. Pass a map to place many at
+   *  once (first-open auto layout materializing in one write). */
+  const placeLiveFrames = (frames: Record<string, LiveRect>) =>
+    patchLiveCanvas((lc) => ({ ...lc, frames: { ...(lc.frames ?? {}), ...frames } }));
+
+  /** Put a project frame back on the shelf (left list). */
+  const removeLiveFrame = (projectId: string) =>
+    patchLiveCanvas((lc) => {
+      const frames = { ...(lc.frames ?? {}) };
+      delete frames[projectId];
+      return { ...lc, frames };
+    });
+
+  /** Remember a session node's offset within its project frame. */
+  const moveLiveNode = (termId: string, pos: LiveRect) =>
+    patchLiveCanvas((lc) => ({ ...lc, nodes: { ...(lc.nodes ?? {}), [termId]: pos } }));
+
+  const setLiveCanvasView = (view: PlanViewport) => patchLiveCanvas((lc) => ({ ...lc, view }));
+
+  /** Remember the left sidebar width (user-dragged). */
+  const setLiveSideW = (sideW: number) => patchLiveCanvas((lc) => ({ ...lc, sideW }));
+
+  /** Type a prompt into a session's claude TUI (with the submitting CR). */
+  const promptTerm = (termId: string, text: string) => {
+    if (!text.trim()) return;
+    sendPrompt(termId, text.trim());
+  };
+
   const liveByProject = useMemo(() => {
     const m: Record<string, number> = {};
     for (const t of config.terminals) {
@@ -1875,6 +2156,25 @@ export function useFleet() {
     projectStatus,
     waitingByProject,
     activity,
+    liveTool,
+    toolJobs,
+    toolManifests,
+    runTool,
+    cancelToolJob,
+    dismissToolJob,
+    importToolResults,
+    setToolRoot,
+    addCustomTool,
+    removeCustomTool,
+    placeLiveFrames,
+    removeLiveFrame,
+    moveLiveNode,
+    setLiveCanvasView,
+    setLiveSideW,
+    promptTerm,
+    woken,
+    wakeTerm,
+    resumeInto,
     jumpToTerm,
     sessions,
     sessionsLoading,

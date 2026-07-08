@@ -203,6 +203,57 @@
   flex-shrink: 0;
 }
 
+/* external tools registry */
+.set-sec-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+.set-sec-head h3 {
+  margin: 0;
+}
+.set-tool {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 0;
+}
+.set-tool + .set-tool {
+  border-top: 1px solid var(--border);
+}
+.set-tool-main {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.set-tool-tag {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.3px;
+  color: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 1px 7px;
+  flex-shrink: 0;
+}
+.set-tool-root {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding-left: 15px;
+}
+.set-tool-root .set-proj-path {
+  flex: 1;
+}
+.btn.danger:hover:not(:disabled) {
+  border-color: #f87171;
+  color: #f87171;
+}
+
 /* launch update pill */
 .update-pill {
   position: fixed;

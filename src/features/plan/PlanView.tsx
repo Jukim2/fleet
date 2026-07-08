@@ -14,6 +14,7 @@ import {
   TermStatus,
 } from "../../types";
 import NotesPanel from "./NotesPanel";
+import LiveView, { LiveProps } from "./LiveView";
 import { gitIsRepo } from "../../api/git";
 import { openPath } from "../../api/system";
 import { laneLiveTerm } from "../../lib/board";
@@ -76,6 +77,7 @@ export default function PlanView({
   onRemoveNode,
   onSetStepDeps,
   onSetStepFeature,
+  live,
   wtRun,
   wtLastRun,
   wtMsg,
@@ -146,8 +148,11 @@ export default function PlanView({
   onRemoveNode: (id: string) => void;
   onSetStepDeps: (stepId: string, deps: string[]) => void;
   onSetStepFeature: (stepId: string, featureId: string) => void;
+  /** 라이브 탭 — 전 프로젝트의 실시간 claude 세션·툴 노드 (커맨드센터) */
+  live: LiveProps;
   onClose: () => void;
 }) {
+  const [tab, setTab] = useState<"plan" | "live">("plan");
   const [goal, setGoal] = useState("");
   const [goalOpen, setGoalOpen] = useState(false); // header "＋ AI로 추가" popover
   // right memo sidebar: collapsible + width-resizable, persisted in config.
@@ -664,8 +669,23 @@ export default function PlanView({
     <div className="plan-overlay" onMouseDown={onClose}>
       <div className="plan" onMouseDown={(e) => e.stopPropagation()}>
         <header className="plan-head">
-          <strong>{project.name} · 플랜 그래프</strong>
-          {hasGraph && total > 0 && (
+          <strong>{project.name}</strong>
+          <div className="plan-tabs">
+            <button
+              className={`plan-tab ${tab === "plan" ? "on" : ""}`}
+              onClick={() => setTab("plan")}
+            >
+              플랜 그래프
+            </button>
+            <button
+              className={`plan-tab ${tab === "live" ? "on" : ""}`}
+              onClick={() => setTab("live")}
+              title="전 프로젝트의 실시간 claude 세션과 툴 실행을 한눈에"
+            >
+              라이브
+            </button>
+          </div>
+          {tab === "plan" && hasGraph && total > 0 && (
             <div className="plan-progress">
               <div className="plan-bar">
                 <div className="plan-bar-fill" style={{ width: `${pct}%` }} />
@@ -676,6 +696,8 @@ export default function PlanView({
             </div>
           )}
           <div className="plan-head-actions">
+            {tab === "plan" && (
+            <>
             <div className="plan-cardsize" title="카드 크기 (저장됨)">
               <button
                 className="icon-btn"
@@ -756,11 +778,18 @@ export default function PlanView({
             <button className="btn" onClick={onAddTheme} title="대블럭을 직접 추가">
               ＋ 대블럭
             </button>
+            </>
+            )}
             <button className="icon-btn" onClick={onClose} title="닫기">
               ✕
             </button>
           </div>
         </header>
+
+        {tab === "live" ? (
+          <LiveView {...live} />
+        ) : (
+        <>
 
         {planning && (
           <div className="plan-note">
@@ -1321,6 +1350,8 @@ export default function PlanView({
               </button>
             </div>
           </footer>
+        )}
+        </>
         )}
       </div>
 

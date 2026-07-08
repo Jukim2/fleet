@@ -20,6 +20,7 @@ mod exec;
 mod git;
 mod pty;
 mod sessions;
+mod tools;
 mod webtabs;
 
 /// The user's home directory, cross-platform. Windows native processes often
@@ -42,6 +43,7 @@ pub fn run() {
         .plugin(tauri_plugin_process::init())
         .manage(pty::Sessions::default())
         .manage(bridge::WebQueue::default())
+        .manage(tools::ToolJobs::default())
         .setup(|app| {
             bridge::start_hook_server(app.handle().clone());
             Ok(())
@@ -71,6 +73,11 @@ pub fn run() {
             diagnostics::path_exists,
             diagnostics::open_path,
             exec::run_command,
+            tools::spawn_tool_job,
+            tools::kill_tool_job,
+            tools::list_tool_outputs,
+            tools::import_tool_files,
+            tools::read_tool_manifest,
             webtabs::open_web_tab,
             webtabs::web_eval,
             webtabs::web_eval_cb,

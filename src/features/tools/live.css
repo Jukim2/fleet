@@ -1,0 +1,653 @@
+/* ===== 라이브 커맨드센터 캔버스 (LiveView, lv2-* / lv-*) ===== */
+.lv2 {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+
+/* left shelf: project list (width is inline, user-draggable via .lv2-side-resize) */
+.lv2-side {
+  flex: 0 0 auto;
+  position: relative;
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+}
+/* thin drag handle on the sidebar's right edge */
+.lv2-side-resize {
+  position: absolute;
+  top: 0;
+  right: -3px;
+  width: 7px;
+  height: 100%;
+  cursor: ew-resize;
+  z-index: 5;
+}
+.lv2-side-resize::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 3px;
+  width: 1px;
+  height: 100%;
+  background: transparent;
+  transition: background var(--dur-fast) var(--ease-out);
+}
+.lv2-side-resize:hover::after {
+  background: var(--accent);
+}
+.lv2-side-title {
+  padding: 12px 14px 8px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.6px;
+  color: var(--muted);
+}
+.lv2-side-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.lv2-side-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 8px;
+  background: none;
+  border: none;
+  border-radius: 8px;
+  color: var(--muted);
+  font-size: 12.5px;
+  cursor: pointer;
+  text-align: left;
+  transition:
+    background var(--dur-fast) var(--ease-out),
+    color var(--dur-fast) var(--ease-out);
+}
+.lv2-side-item:hover {
+  background: var(--bg);
+  color: var(--text);
+}
+.lv2-side-item.sel {
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  color: var(--text);
+  font-weight: 600;
+}
+.lv2-side-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.lv2-side-live {
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--bg);
+  background: var(--green);
+  border-radius: 999px;
+  min-width: 16px;
+  height: 16px;
+  display: grid;
+  place-items: center;
+  padding: 0 4px;
+}
+.lv2-side-mark {
+  font-size: 11px;
+  color: var(--accent);
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 2px 4px;
+  border-radius: 6px;
+  transition:
+    color var(--dur-fast) var(--ease-out),
+    background var(--dur-fast) var(--ease-out);
+}
+.lv2-side-mark:hover {
+  background: var(--bg);
+}
+.lv2-side-item:not(.on) .lv2-side-mark {
+  color: var(--border);
+}
+
+/* ---- sidebar bottom: selected project's session list ----
+   Bounded, content-sized panel at the bottom — projects own the flexible space
+   above; sessions take only what they need up to a cap, then scroll. */
+.lv2-side-sess {
+  flex: 0 0 auto;
+  max-height: 46%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  border-top: 1px solid var(--border);
+  margin-top: 4px;
+}
+.lv2-side-sess-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 12px 6px;
+}
+.lv2-side-sess-title {
+  flex: 1;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.4px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.lv2-side-new {
+  background: none;
+  border: 1px solid var(--border);
+  color: var(--muted);
+  border-radius: 7px;
+  padding: 2px 7px;
+  font-size: 10.5px;
+  white-space: nowrap;
+  cursor: pointer;
+  transition:
+    color var(--dur-fast) var(--ease-out),
+    border-color var(--dur-fast) var(--ease-out);
+}
+.lv2-side-new:hover {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+.lv2-side-sess-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0 8px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.lv2-side-sess-empty {
+  font-size: 11.5px;
+  color: var(--muted);
+  padding: 8px 6px;
+}
+.lv2-sess-kind {
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.3px;
+  border-radius: 999px;
+  padding: 1px 6px;
+  flex: 0 0 auto;
+}
+.lv2-sess-kind.claude {
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+.lv2-sess-kind.shell {
+  color: var(--muted);
+  background: color-mix(in srgb, var(--muted) 14%, transparent);
+}
+/* shell tag on a live session node */
+.lv-node-kind {
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.3px;
+  color: var(--muted);
+  background: color-mix(in srgb, var(--muted) 14%, transparent);
+  border-radius: 999px;
+  padding: 1px 6px;
+  flex: 0 0 auto;
+}
+/* canvas + world transform */
+.lv2-canvas {
+  flex: 1;
+  position: relative;
+  overflow: hidden;
+  min-width: 0;
+  background:
+    radial-gradient(circle, color-mix(in srgb, var(--border) 55%, transparent) 1px, transparent 1px)
+    0 0 / 26px 26px;
+  cursor: default;
+}
+.lv2-canvas.panning {
+  cursor: grabbing;
+}
+.lv2-world {
+  position: absolute;
+  inset: 0;
+  transform-origin: 0 0;
+}
+.lv2-hint {
+  position: absolute;
+  color: var(--muted);
+  font-size: 13px;
+}
+.lv2-zoom {
+  position: absolute;
+  right: 14px;
+  bottom: 14px;
+  display: flex;
+  gap: 4px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 4px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.3);
+}
+
+/* project frame — a dashed "big container" the sessions live inside */
+.lv2-frame {
+  position: absolute;
+  background: color-mix(in srgb, var(--surface) 55%, transparent);
+  border: 1.5px dashed color-mix(in srgb, var(--accent) 38%, var(--border));
+  border-radius: 16px;
+  transition:
+    border-color var(--dur-fast) var(--ease-out),
+    box-shadow var(--dur-fast) var(--ease-out);
+  animation: fleet-pop-in var(--dur) var(--ease-out);
+}
+.lv2-frame:hover {
+  border-color: color-mix(in srgb, var(--accent) 62%, var(--border));
+  box-shadow: 0 14px 44px rgba(0, 0, 0, 0.25);
+}
+.lv2-frame-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 44px;
+  padding: 0 12px;
+  border-bottom: 1px dashed color-mix(in srgb, var(--accent) 25%, var(--border));
+  cursor: grab;
+  user-select: none;
+}
+.lv2-frame-head:active {
+  cursor: grabbing;
+}
+.lv2-frame-name {
+  font-weight: 700;
+  font-size: 13.5px;
+  white-space: nowrap;
+}
+.lv2-frame-count {
+  font-size: 11px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.lv2-frame-spacer {
+  flex: 1;
+}
+.lv2-frame-btn {
+  background: none;
+  border: 1px solid var(--border);
+  color: var(--muted);
+  border-radius: 7px;
+  padding: 3px 8px;
+  font-size: 11px;
+  white-space: nowrap;
+  cursor: pointer;
+  transition:
+    color var(--dur-fast) var(--ease-out),
+    border-color var(--dur-fast) var(--ease-out);
+}
+.lv2-frame-btn:hover {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+.lv2-frame-btn.x:hover {
+  color: #f87171;
+  border-color: #f87171;
+}
+.lv2-frame-body {
+  position: relative;
+  padding: 14px;
+  height: calc(100% - 44px);
+}
+.lv2-frame-empty {
+  font-size: 12px;
+  color: var(--muted);
+  padding: 8px 2px;
+}
+
+/* a row = session node (+ edge + tool node) or a job node, absolutely placed */
+.lv2-row {
+  position: absolute;
+  display: flex;
+  align-items: flex-start;
+}
+
+/* nodes (shared look) */
+.lv-node {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 8px 10px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  color: var(--text);
+  font-size: 12.5px;
+  min-width: 0;
+  text-align: left;
+  position: relative;
+  transition:
+    border-color var(--dur-fast) var(--ease-out),
+    box-shadow var(--dur-fast) var(--ease-out);
+}
+button.lv-node {
+  cursor: pointer;
+}
+button.lv-node:hover {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
+}
+.lv-node.session {
+  overflow: hidden; /* explicit (resizable) height — keep content clipped */
+}
+.lv-node.session.waiting {
+  border-color: color-mix(in srgb, var(--amber) 55%, var(--border));
+}
+.lv2-node-drag {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: grab;
+  min-width: 0;
+}
+.lv2-node-drag:active {
+  cursor: grabbing;
+}
+.lv-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  flex: 0 0 auto;
+}
+.lv-dot.busy {
+  background: var(--accent);
+  animation: lv-pulse 1.4s ease-in-out infinite;
+}
+.lv-dot.waiting {
+  background: var(--amber);
+  animation: lv-pulse 1s ease-in-out infinite;
+}
+.lv-dot.idle {
+  background: var(--green);
+}
+.lv-dot.stopped {
+  background: var(--muted);
+}
+@keyframes lv-pulse {
+  50% {
+    opacity: 0.35;
+  }
+}
+.lv-node-title {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+}
+.lv-node-state {
+  font-size: 10.5px;
+  color: var(--muted);
+  flex: 0 0 auto;
+}
+.lv-node-state.waiting {
+  color: var(--amber);
+}
+.lv-node-activity {
+  font-size: 11px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.lv2-node-btn {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--muted);
+  border-radius: 7px;
+  padding: 2px 8px;
+  font-size: 10.5px;
+  white-space: nowrap;
+  flex: 0 0 auto;
+  cursor: pointer;
+  transition:
+    color var(--dur-fast) var(--ease-out),
+    border-color var(--dur-fast) var(--ease-out);
+}
+.lv2-node-btn:hover,
+.lv2-node-btn.on {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+/* 미니 터미널 — 진짜 xterm이 이 구멍으로 도킹된다. 노드 크기 조절 = 터미널
+   크기 조절 (PTY도 따라서 refit). */
+.lv2-node-term {
+  flex: 1;
+  min-height: 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  background: #101014; /* xterm 테마 배경과 일치 */
+}
+
+.lv2-node-btn.x:hover {
+  color: #f87171;
+  border-color: #f87171;
+}
+
+/* 세션 목록 행 — 사이드바 하단(잠든 탭 불러오기 + 지난 대화 이어하기) */
+.lv2-sess {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+.lv2-sess-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: none;
+  border: none;
+  border-radius: 7px;
+  color: var(--text);
+  font-size: 12px;
+  padding: 4px 6px;
+  cursor: pointer;
+  text-align: left;
+  transition: background var(--dur-fast) var(--ease-out);
+}
+.lv2-sess-main:hover {
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+.lv2-sess-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.lv2-sess-resume {
+  color: var(--accent);
+  font-size: 12px;
+  flex: 0 0 auto;
+}
+.lv2-sess-act {
+  font-size: 10.5px;
+  color: var(--muted);
+  flex: 0 0 auto;
+  opacity: 0;
+  transition: opacity var(--dur-fast) var(--ease-out);
+}
+.lv2-sess-main:hover .lv2-sess-act {
+  opacity: 1;
+  color: var(--accent);
+}
+.lv2-sess-x {
+  flex: 0 0 auto;
+  background: none;
+  border: none;
+  color: var(--muted);
+  font-size: 10px;
+  width: 20px;
+  height: 20px;
+  border-radius: 6px;
+  cursor: pointer;
+  opacity: 0.6;
+  transition:
+    color var(--dur-fast) var(--ease-out),
+    opacity var(--dur-fast) var(--ease-out);
+}
+.lv2-sess-x:hover {
+  color: #f87171;
+  opacity: 1;
+}
+
+/* resize handles (bottom-right corner of frames and session nodes) */
+.lv2-resize {
+  position: absolute;
+  right: 1px;
+  bottom: 1px;
+  width: 16px;
+  height: 16px;
+  cursor: nwse-resize;
+  border-right: 2px solid var(--border);
+  border-bottom: 2px solid var(--border);
+  border-bottom-right-radius: 12px;
+  opacity: 0.7;
+  transition:
+    border-color var(--dur-fast) var(--ease-out),
+    opacity var(--dur-fast) var(--ease-out);
+}
+.lv2-resize:hover {
+  opacity: 1;
+  border-color: var(--accent);
+}
+.lv2-resize.node {
+  width: 13px;
+  height: 13px;
+  border-bottom-right-radius: 9px;
+}
+
+/* connector between a claude node and its tool node */
+.lv-edge {
+  flex: 0 0 30px;
+  height: 2px;
+  margin-top: 18px;
+  background: var(--border);
+  position: relative;
+}
+.lv-edge::after {
+  content: "";
+  position: absolute;
+  right: -1px;
+  top: -3px;
+  border: 4px solid transparent;
+  border-left-color: var(--border);
+}
+.lv-edge.live {
+  background: repeating-linear-gradient(90deg, var(--accent) 0 6px, transparent 6px 12px);
+  animation: lv-dash 0.7s linear infinite;
+}
+.lv-edge.live::after {
+  border-left-color: var(--accent);
+}
+@keyframes lv-dash {
+  to {
+    background-position: 12px 0;
+  }
+}
+
+/* tool nodes */
+.lv-node.tool.claude {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+  background: color-mix(in srgb, var(--accent) 7%, var(--surface));
+}
+.lv-node.tool.job.running {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+}
+.lv-node.tool.job.done {
+  border-color: color-mix(in srgb, var(--green) 40%, var(--border));
+}
+.lv-node.tool.job.error {
+  border-color: rgba(248, 113, 113, 0.5);
+}
+.lv-tool-name {
+  font-weight: 700;
+  font-size: 12px;
+}
+.lv-tool-detail {
+  font-size: 10.5px;
+  color: var(--muted);
+  font-family: ui-monospace, monospace;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+}
+.lv-tool-tag {
+  font-size: 10.5px;
+  color: var(--muted);
+}
+.lv2-job-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.lv-fleet-badge {
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.4px;
+  color: var(--bg);
+  background: var(--accent);
+  border-radius: 5px;
+  padding: 2px 6px;
+}
+.lv-job-bar {
+  width: 100%;
+  height: 5px;
+  background: var(--bg);
+  border-radius: 999px;
+  overflow: hidden;
+}
+.lv-job-fill {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+  border-radius: 999px;
+  transition: width 0.4s var(--ease-out);
+}
+.lv-job-fill.err {
+  background: #f87171;
+}
+.lv-job-fill.indet {
+  width: 40%;
+  animation: sf-indet 1.2s var(--ease-ios) infinite;
+}
+.lv-job-x {
+  margin: 18px 0 0 6px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  color: var(--muted);
+  border-radius: 8px;
+  width: 24px;
+  height: 24px;
+  font-size: 10px;
+  cursor: pointer;
+  flex: 0 0 auto;
+  transition:
+    color var(--dur-fast) var(--ease-out),
+    border-color var(--dur-fast) var(--ease-out);
+}
+.lv-job-x:hover {
+  color: #f87171;
+  border-color: #f87171;
+}

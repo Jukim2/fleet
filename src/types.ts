@@ -19,6 +19,10 @@ export type Terminal = {
   cwd?: string;
   /** true once the user renames it manually — blocks session auto-titling */
   renamed?: boolean;
+  /** Last live claude session id seen in this terminal (via hooks). Persisted so
+   *  that on app restart the terminal resumes that conversation instead of
+   *  starting a brand-new one. */
+  resumeId?: string;
 };
 
 /** A reusable prompt block. */
@@ -198,7 +202,63 @@ export type FleetConfig = {
   /** plan-graph memo sidebar: open state + width (px), persisted */
   planNotesOpen?: boolean;
   planNotesW?: number;
+  /** manifestId -> folder where that external tool lives (e.g. SpriteForge) */
+  toolRoots?: Record<string, string>;
+  /** projectId -> manifestId -> last-used run config, so re-runs are one click */
+  toolPresets?: Record<string, Record<string, SavedToolRun>>;
+  /** user-connected tools, keyed by manifest id — the raw fleet-tool.json blob
+   *  (parsed/validated on load; see docs/EXTERNAL_TOOLS.md for the policy) */
+  customTools?: Record<string, unknown>;
+  /** 라이브 캔버스: which projects are placed as frames, node offsets, viewport */
+  liveCanvas?: LiveCanvas;
 };
+
+/** A placed rect on the live canvas: position, plus a user-resized size
+ *  (absent w/h = auto-size to content). */
+export type LiveRect = { x: number; y: number; w?: number; h?: number };
+
+/** Live-canvas layout state (persisted so arrangements survive restarts).
+ *  `frames` absent (undefined) = never arranged → auto-place live projects;
+ *  present-but-empty = user cleared the canvas on purpose. */
+export type LiveCanvas = {
+  /** projectId -> frame rect (world coords) */
+  frames?: Record<string, LiveRect>;
+  /** termId -> session-node rect within its project frame */
+  nodes?: Record<string, LiveRect>;
+  /** pan + zoom */
+  view?: PlanViewport;
+  /** left sidebar width in px (user-adjustable; absent = default) */
+  sideW?: number;
+};
+
+/** last-used external-tool run config (per project, per manifest) */
+export type SavedToolRun = {
+  mode: string;
+  inputDir: string;
+  values: Record<string, string | number | boolean>;
+};
+
+/** A live external-tool job Fleet launched directly (non-persisted). */
+export type ToolJob = {
+  id: string;
+  projectId: string;
+  manifestId: string;
+  mode: string;
+  inputDir: string;
+  /** where results land; scanned for the preview grid when done */
+  outDir: string;
+  status: "running" | "done" | "error" | "killed";
+  /** rolling tail of output lines */
+  lines: string[];
+  done: number;
+  failed: number;
+  total?: number;
+  startedAt: number;
+  endedAt?: number;
+};
+
+/** A tool invocation observed on a claude session (from PreToolUse hooks). */
+export type LiveToolUse = { manifestId: string; detail: string; at: number };
 
 /** Saved plan-graph viewport: translate (x,y) + zoom (k). */
 export type PlanViewport = { x: number; y: number; k: number };

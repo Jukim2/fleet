@@ -12,16 +12,49 @@ type PtyOutput = { id: string; data: string };
 // Claude Code shows this hint in its status line only while a turn is running.
 const WORKING_RE = /esc to interrupt/i;
 
+// Terminal font size is a single global preference (Ctrl +/-/0, Ctrl+wheel),
+// persisted in localStorage and broadcast so every live terminal stays in sync.
+const FONT_MIN = 8;
+const FONT_MAX = 32;
+const FONT_DEFAULT = 13;
+const FONT_KEY = "fleet.termFontSize";
+const FONT_EVENT = "fleet-term-fontsize";
+
+function readFontSize(): number {
+  const n = Number(localStorage.getItem(FONT_KEY));
+  return Number.isFinite(n) && n >= FONT_MIN && n <= FONT_MAX ? n : FONT_DEFAULT;
+}
+
+function clampFont(n: number): number {
+  return Math.min(FONT_MAX, Math.max(FONT_MIN, Math.round(n)));
+}
+
+// Rewrite a claude startup command to resume `sessionId`, preserving any flags
+// (--effort, --dangerously-skip-permissions, --permission-mode, …). Non-claude
+// startups (plain shell "") are returned unchanged so we never resume into them.
+function resumeCommand(startup: string, sessionId: string): string {
+  const s = startup.trim();
+  if (!/^claude(\s|$)/.test(s)) return startup;
+  const flags = s
+    .replace(/^claude\b/, "")
+    .replace(/\s--resume(?:=|\s+)\S+/g, "") // drop any pre-baked --resume <id>
+    .replace(/\s-r(?:=|\s+)\S+/g, "")
+    .trim();
+  return `claude --resume ${sessionId}${flags ? " " + flags : ""}`;
+}
+
 export default function Terminal({
   id,
   cwd,
   startup,
+  resumeId,
   visible,
   onStatus,
 }: {
   id: string;
   cwd: string;
   startup: string;
+  resumeId?: string;
   visible: boolean;
   onStatus?: (id: string, status: TermStatus) => void;
 }) {
@@ -33,7 +66,7 @@ export default function Terminal({
 
   useEffect(() => {
     const term = new XTerm({
-      fontSize: 13,
+      fontSize: readFontSize(),
       // Cross-platform monospace. macOS fonts come first, then the Windows
       // ones (Cascadia ships with Windows Terminal; Consolas is always present)
       // so the box-drawing/braille glyphs in claude's TUI logo render in a true
@@ -68,12 +101,48 @@ export default function Terminal({
     // managed) is deprecated and pinned to xterm 5, so it can't replace WebGL
     // here. Accept the small typing/scroll cost for correct color.
 
+    // Apply a font size to THIS terminal + refit; `broadcast` also persists it
+    // and tells every other live terminal to match (single global preference).
+    const applyFont = (size: number, broadcast: boolean) => {
+      const next = clampFont(size);
+      if (term.options.fontSize === next) return;
+      term.options.fontSize = next;
+      try {
+        fit.fit();
+        resizePty(id, term.cols, term.rows);
+      } catch {
+        /* hidden */
+      }
+      if (broadcast) {
+        localStorage.setItem(FONT_KEY, String(next));
+        window.dispatchEvent(new CustomEvent(FONT_EVENT, { detail: next }));
+      }
+    };
+    // Sync when another terminal changes the size.
+    const onFontEvent = (e: Event) => applyFont((e as CustomEvent<number>).detail, false);
+    window.addEventListener(FONT_EVENT, onFontEvent);
+
+    // Ctrl/Cmd+wheel zooms the font. This must run BEFORE xterm's own wheel
+    // handler (and beat the browser's page-zoom), so it's a capture-phase
+    // listener on the host with preventDefault — returning false from xterm's
+    // custom handler alone doesn't stop the native scroll/zoom, which let the
+    // wheel-up (zoom-in) case leak through as a scrollback scroll.
+    const onWheelCapture = (e: WheelEvent) => {
+      if (!(e.ctrlKey || e.metaKey)) return;
+      e.preventDefault();
+      e.stopPropagation();
+      applyFont((term.options.fontSize ?? FONT_DEFAULT) - Math.sign(e.deltaY), true);
+    };
+    const host = hostRef.current!;
+    host.addEventListener("wheel", onWheelCapture, { capture: true, passive: false });
+
     // Claude's TUI enables mouse tracking, so by default xterm forwards wheel
     // events to the app instead of scrolling its own scrollback — the terminal
     // feels "stuck". When we're in the normal buffer (Claude doesn't use the
     // alternate screen), intercept the wheel and scroll xterm's history
     // ourselves; otherwise fall through to default handling.
     term.attachCustomWheelEventHandler((e) => {
+      if (e.ctrlKey || e.metaKey) return false; // handled by onWheelCapture
       if (term.buffer.active.type === "normal" && term.modes.mouseTrackingMode !== "none") {
         term.scrollLines(Math.sign(e.deltaY) * 3);
         return false; // don't forward this wheel event to claude
@@ -96,6 +165,21 @@ export default function Terminal({
       const mod = e.ctrlKey || e.metaKey;
       if (!mod) return true;
       const key = e.key.toLowerCase();
+      // Font zoom: Ctrl/Cmd with +/=/-/0 (0 resets). Consume so xterm doesn't
+      // send the keystroke to claude.
+      const cur = term.options.fontSize ?? FONT_DEFAULT;
+      if (key === "=" || key === "+") {
+        applyFont(cur + 1, true);
+        return false;
+      }
+      if (key === "-" || key === "_") {
+        applyFont(cur - 1, true);
+        return false;
+      }
+      if (key === "0") {
+        applyFont(FONT_DEFAULT, true);
+        return false;
+      }
       if (key === "c" && (e.shiftKey || term.hasSelection())) {
         const sel = term.getSelection();
         if (sel) navigator.clipboard?.writeText(sel).catch(() => {});
@@ -105,9 +189,25 @@ export default function Terminal({
       return true;
     });
 
-    spawnSession(id, cwd, term.cols, term.rows, startup).catch((e) =>
+    // Resume the terminal's last claude conversation on cold start instead of
+    // booting a fresh one. `resumeId` is only set for terminals restored from a
+    // previous run (a brand-new tab has none → plain `startup`).
+    const spawnCmd = resumeId ? resumeCommand(startup, resumeId) : startup;
+    spawnSession(id, cwd, term.cols, term.rows, spawnCmd).catch((e) =>
       term.writeln(`\r\n[fleet] spawn error: ${e}`),
     );
+
+    // "불러오기" on a session whose PTY already exited (live canvas / wakeTerm):
+    // relaunch in place — same terminal, fresh shell (backend replaces the dead
+    // session under the same id).
+    const onRespawn = (e: Event) => {
+      if ((e as CustomEvent<string>).detail !== id) return;
+      term.reset();
+      spawnSession(id, cwd, term.cols, term.rows, spawnCmd).catch((err) =>
+        term.writeln(`\r\n[fleet] spawn error: ${err}`),
+      );
+    };
+    window.addEventListener("fleet-respawn", onRespawn);
 
     // Read the visible viewport and decide busy vs idle from what Claude's TUI
     // is actually showing: the "esc to interrupt" hint is present only while a
@@ -132,6 +232,17 @@ export default function Terminal({
     // Keyboard input → PTY, including CJK/IME composition. See imeBridge.ts.
     const ime = attachInput(term, id);
     imeRef.current = ime;
+
+    // Alt-tab to another OS window (or minimize) while mid-composition: the pane
+    // stays visible (so the visible=false reset never fires) AND the browser does
+    // NOT blur the focused textarea when the whole WINDOW loses focus — it fires
+    // `blur` on `window` only, and the textarea keeps focus. So neither existing
+    // reset path runs, the IME run survives the switch, and the first Hangul
+    // keystroke on return double-writes (stale run + resurrected composition,
+    // plus Windows re-anchoring its IME indicator at the textarea's 0,0). Clear
+    // the run on window blur too. reset() is a no-op when no run is active.
+    const onWindowBlur = () => ime.reset();
+    window.addEventListener("blur", onWindowBlur);
 
     const unlistenOut = listen<PtyOutput>("pty-output", (e) => {
       if (e.payload.id !== id) return;
@@ -168,6 +279,10 @@ export default function Terminal({
       if (rzTimer) window.clearTimeout(rzTimer);
       imeRef.current = null;
       ime.dispose();
+      window.removeEventListener(FONT_EVENT, onFontEvent);
+      window.removeEventListener("blur", onWindowBlur);
+      window.removeEventListener("fleet-respawn", onRespawn);
+      host.removeEventListener("wheel", onWheelCapture, { capture: true });
       unlistenOut.then((f) => f());
       unlistenExit.then((f) => f());
       ro.disconnect();

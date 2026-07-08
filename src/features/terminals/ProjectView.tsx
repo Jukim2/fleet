@@ -1,11 +1,10 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import Terminal from "./Terminal";
 import NewTerminalMenu from "./NewTerminalMenu";
 import SplitLayout, { SplitCtx } from "./SplitLayout";
+import { TermSlot } from "./termDock";
 import { LayoutNode, Project, Terminal as Term, TermStatus } from "../../types";
 import { leaves } from "../../lib/layout";
 import { openPath } from "../../api/system";
-import { typeFilesAsPaths } from "./attachFiles";
 import "./terminals.css";
 
 type Rect = { left: number; top: number; width: number; height: number };
@@ -55,10 +54,8 @@ export default function ProjectView({
   onSetLeafTerm,
   onSplitWithTerm,
   onMovePane,
-  onStatus,
   onOpenWeb,
   onOpenPlan,
-  onNotice,
   presetsOpen,
   onTogglePresets,
   wtActive,
@@ -81,10 +78,8 @@ export default function ProjectView({
   onSetLeafTerm: (paneId: string, termId: string) => void;
   onSplitWithTerm: (paneId: string, dir: "row" | "col", before: boolean, termId: string) => void;
   onMovePane: (sourcePaneId: string, targetPaneId: string, zone: Zone) => void;
-  onStatus: (id: string, status: TermStatus) => void;
   onOpenWeb: () => void;
   onOpenPlan: () => void;
-  onNotice: (kind: "ok" | "err" | "info", text: string) => void;
   presetsOpen: boolean;
   onTogglePresets: () => void;
   wtActive?: { done: number; total: number; active: number; error: number };
@@ -95,9 +90,6 @@ export default function ProjectView({
   const [dragging, setDragging] = useState(false);
   const [dragTermId, setDragTermId] = useState<string | null>(null);
   const [hint, setHint] = useState<{ rect: Rect; zone: Zone } | null>(null);
-  // termId currently hovered by an OS file drag (Explorer/Finder) — shows the
-  // "drop to attach as path" overlay on that pane.
-  const [fileHover, setFileHover] = useState<string | null>(null);
   const termsById = Object.fromEntries(terminals.map((t) => [t.id, t]));
   const layoutLeaves = layout ? leaves(layout) : [];
   // Tabs that exist but aren't in any pane — candidates to fill the vacated side
@@ -413,56 +405,11 @@ export default function ProjectView({
                   : { display: "none" }
               }
               onMouseDown={() => focusByTerm(t.id)}
-              // OS file drag → attach as path. Internal tab/pane drags never get
-              // here (the drop-catcher covers the stage while `dragging`), and
-              // the "Files" type guard keeps this inert for anything else.
-              onDragOver={(e) => {
-                if (!e.dataTransfer.types.includes("Files")) return;
-                e.preventDefault();
-                e.dataTransfer.dropEffect = "copy";
-                if (fileHover !== t.id) setFileHover(t.id);
-              }}
-              onDragLeave={(e) => {
-                // Ignore leaves into our own children (xterm's internals).
-                if (e.currentTarget.contains(e.relatedTarget as Node | null)) return;
-                setFileHover((h) => (h === t.id ? null : h));
-              }}
-              onDrop={(e) => {
-                if (!e.dataTransfer.files.length) return;
-                e.preventDefault();
-                setFileHover(null);
-                focusByTerm(t.id);
-                // A dropped FOLDER exposes no path and no bytes to the webview
-                // (dragDropEnabled is off) — only copy→paste can carry its real
-                // path. Attach the plain files, explain the folders.
-                const files: File[] = [];
-                let dirs = 0;
-                for (const it of Array.from(e.dataTransfer.items)) {
-                  if (it.webkitGetAsEntry?.()?.isDirectory) {
-                    dirs++;
-                    continue;
-                  }
-                  const file = it.getAsFile();
-                  if (file) files.push(file);
-                }
-                if (dirs > 0)
-                  onNotice(
-                    "info",
-                    "폴더는 드래그로 경로를 읽을 수 없어요 — 폴더를 복사(Ctrl+C)한 뒤 터미널에 붙여넣기(Ctrl+V)하면 실제 경로가 입력돼요",
-                  );
-                if (files.length) void typeFilesAsPaths(t.id, files);
-              }}
             >
-              <Terminal
-                id={t.id}
-                cwd={t.cwd ?? project.path}
-                startup={t.startup}
-                visible={shown}
-                onStatus={onStatus}
-              />
-              {fileHover === t.id && (
-                <div className="file-drop-hint">놓으면 파일 경로가 입력돼요</div>
-              )}
+              {/* The real xterm (owned by TermPortals) docks in here while this
+                  pane is shown; OS-file drop-to-attach lives on the terminal's
+                  own wrapper, so it works on every dock surface. */}
+              <TermSlot termId={t.id} slotKey={`pv-${project.id}`} priority={1} active={shown} />
             </div>
           );
         })}

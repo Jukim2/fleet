@@ -25,6 +25,19 @@ function Update-PathEnv {
   $user = [Environment]::GetEnvironmentVariable('Path', 'User')
   $env:Path = "$machine;$user;$env:USERPROFILE\.cargo\bin"
 }
+# Free a TCP port left held by an orphaned dev process. On Windows, closing the
+# Tauri app window doesn't reliably kill its `beforeDevCommand` (Vite) child tree,
+# so a stale node server can keep holding 1420 and block the next `tauri dev`.
+function Free-DevPort($port) {
+  $conns = Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue
+  foreach ($procId in ($conns.OwningProcess | Sort-Object -Unique)) {
+    if (-not $procId -or $procId -eq 0) { continue }
+    $proc = Get-Process -Id $procId -ErrorAction SilentlyContinue
+    Say "Port $port held by $($proc.Name) (PID $procId) - cleaning up orphaned dev process..."
+    taskkill /PID $procId /T /F 2>&1 | Out-Null
+  }
+}
+
 # Ask before changing the user's system. Enter = yes. Returns $true to proceed.
 function Confirm-Install($what) {
   if ($Yes) { return $true }
@@ -94,7 +107,7 @@ if (-not (Test-Path 'node_modules')) {
 # --- run ---------------------------------------------------------------------
 switch ($Mode) {
   'install' { Say "Setup complete. Run: npm run tauri dev" }
-  'dev'     { Say "Launching dev app..."; npm run tauri dev }
+  'dev'     { Free-DevPort 1420; Free-DevPort 1421; Say "Launching dev app..."; npm run tauri dev }
   'build'   {
     Say "Building release bundle..."
     npm run tauri build

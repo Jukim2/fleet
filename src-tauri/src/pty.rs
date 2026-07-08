@@ -62,7 +62,16 @@ pub fn spawn_session(
         })
         .map_err(|e| e.to_string())?;
 
-    let mut cmd = CommandBuilder::new_default_prog();
+    // On Windows the "default prog" is %COMSPEC% (cmd.exe), which lacks the
+    // unix-ish niceties (`ls`, etc.) people expect; use PowerShell instead.
+    // Elsewhere keep the user's login shell.
+    let mut cmd = if cfg!(windows) {
+        let mut c = CommandBuilder::new("powershell.exe");
+        c.arg("-NoLogo");
+        c
+    } else {
+        CommandBuilder::new_default_prog()
+    };
     cmd.cwd(&cwd);
     cmd.env("TERM", "xterm-256color");
     // Tag the PTY so Claude Code hooks fired inside it can report which terminal

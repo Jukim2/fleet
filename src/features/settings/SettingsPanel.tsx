@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
+import { open } from "@tauri-apps/plugin-dialog";
 import { Project } from "../../types";
+import { ToolManifest } from "../../lib/tools";
 import {
   appDiagnostics,
   checkForUpdate,
@@ -15,15 +17,28 @@ export default function SettingsPanel({
   projects,
   onRelink,
   onReinstallHooks,
+  manifests,
+  toolRoots,
+  customToolIds,
+  onAddCustomTool,
+  onRemoveCustomTool,
+  onSetToolRoot,
 }: {
   onClose: () => void;
   projects: Project[];
   onRelink: (projectId: string) => void;
   onReinstallHooks: () => Promise<void>;
+  manifests: Record<string, ToolManifest>;
+  toolRoots: Record<string, string>;
+  customToolIds: string[];
+  onAddCustomTool: (root: string) => Promise<boolean>;
+  onRemoveCustomTool: (manifestId: string) => void;
+  onSetToolRoot: (manifestId: string, path: string) => void;
 }) {
   const [diag, setDiag] = useState<Diagnostics | null>(null);
   const [exists, setExists] = useState<Record<string, boolean>>({});
   const [reinstalling, setReinstalling] = useState(false);
+  const [rootExists, setRootExists] = useState<Record<string, boolean>>({});
 
   // Update state
   const [checking, setChecking] = useState(false);
@@ -45,6 +60,29 @@ export default function SettingsPanel({
     checkPaths();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projects]);
+
+  // verify each connected tool's root folder still exists
+  useEffect(() => {
+    const roots = Object.entries(toolRoots).filter(([, v]) => v);
+    Promise.all(roots.map(async ([id, path]) => [id, await pathExists(path)] as const)).then(
+      (entries) => setRootExists(Object.fromEntries(entries)),
+    );
+  }, [toolRoots]);
+
+  /** connect a new tool by picking its fleet-tool.json folder */
+  const connectTool = async () => {
+    const picked = await open({
+      directory: true,
+      multiple: false,
+      title: "툴 폴더 선택 (fleet-tool.json 포함)",
+    });
+    if (picked && typeof picked === "string") await onAddCustomTool(picked);
+  };
+  /** set / change a tool's root folder */
+  const pickRoot = async (manifestId: string, current?: string) => {
+    const picked = await open({ directory: true, multiple: false, defaultPath: current || undefined });
+    if (picked && typeof picked === "string") onSetToolRoot(manifestId, picked);
+  };
 
   const reinstall = async () => {
     setReinstalling(true);
@@ -179,6 +217,68 @@ export default function SettingsPanel({
             <p className="set-note">
               설치 후 새로 여는 Claude 터미널부터 상태·알림이 적용됩니다.
             </p>
+          </section>
+
+          {/* External tools registry */}
+          <section className="settings-sec">
+            <div className="set-sec-head">
+              <h3>외부 툴</h3>
+              <button className="btn sm" onClick={connectTool}>
+                ＋ 툴 연결
+              </button>
+            </div>
+            {Object.keys(manifests).length === 0 && (
+              <p className="set-muted">연결된 툴이 없어요.</p>
+            )}
+            {Object.values(manifests).map((m) => {
+              const custom = customToolIds.includes(m.id);
+              const root = toolRoots[m.id];
+              const ok = root ? rootExists[m.id] : undefined;
+              return (
+                <div className="set-tool" key={m.id}>
+                  <div className="set-tool-main">
+                    <span className={`set-proj-dot ${ok === false ? "warn" : ok ? "ok" : ""}`} />
+                    <span className="set-proj-name">{m.name}</span>
+                    <span className="set-tool-tag">{custom ? "커스텀" : "내장"}</span>
+                    <span className="set-muted sm">모드 {m.modes.length}개</span>
+                  </div>
+                  <div className="set-tool-root">
+                    {root ? (
+                      <>
+                        <span className="set-proj-path mono" title={root}>
+                          {root}
+                        </span>
+                        {ok === false && <span className="warn sm">폴더 없음</span>}
+                        {ok && (
+                          <button className="btn sm" onClick={() => openPath(root)}>
+                            열기
+                          </button>
+                        )}
+                        <button className="btn sm" onClick={() => pickRoot(m.id, root)}>
+                          경로 변경
+                        </button>
+                      </>
+                    ) : (
+                      <>
+                        <span className="set-muted sm">폴더 미연결</span>
+                        <button className="btn sm" onClick={() => pickRoot(m.id)}>
+                          폴더 지정
+                        </button>
+                      </>
+                    )}
+                    {custom && (
+                      <button
+                        className="btn sm danger"
+                        onClick={() => onRemoveCustomTool(m.id)}
+                        title="이 툴 연결 해제"
+                      >
+                        삭제
+                      </button>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
           </section>
 
           {/* Project paths */}
