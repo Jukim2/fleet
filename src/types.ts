@@ -1,4 +1,5 @@
 // Data model for Fleet. Persisted via the Rust load/save_config commands.
+import { AgentKind } from "./lib/agents";
 
 /** A project = a folder. Holds one or more terminals. */
 export type Project = {
@@ -170,6 +171,11 @@ export type Split = {
 export type LayoutNode = Leaf | Split;
 
 export type FleetConfig = {
+  /** the active coding-agent CLI for new sessions + the resume/status logic
+   *  (absent → "claude" for configs created before codex support) */
+  agent?: AgentKind;
+  /** selected UI theme id (absent → "slate", the default). See lib/themes.ts. */
+  theme?: string;
   projects: Project[];
   terminals: Terminal[];
   /** projectId -> split layout root (null = no panes shown) */
@@ -209,6 +215,9 @@ export type FleetConfig = {
   /** user-connected tools, keyed by manifest id — the raw fleet-tool.json blob
    *  (parsed/validated on load; see docs/EXTERNAL_TOOLS.md for the policy) */
   customTools?: Record<string, unknown>;
+  /** user-connected coding agents, keyed by agent id — the raw fleet-agent.json
+   *  blob (parsed by parseAgentManifest, merged over built-ins claude/codex) */
+  customAgents?: Record<string, unknown>;
   /** 라이브 캔버스: which projects are placed as frames, node offsets, viewport */
   liveCanvas?: LiveCanvas;
 };
@@ -229,6 +238,8 @@ export type LiveCanvas = {
   view?: PlanViewport;
   /** left sidebar width in px (user-adjustable; absent = default) */
   sideW?: number;
+  /** when on, resizing a node or adding a session re-flows a frame's nodes into a grid */
+  autoArrange?: boolean;
 };
 
 /** last-used external-tool run config (per project, per manifest) */

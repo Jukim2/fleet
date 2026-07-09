@@ -47,7 +47,7 @@
   cursor: pointer;
 }
 .palette-item.sel {
-  background: rgba(167, 139, 250, 0.18);
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
 }
 .palette-name {
   font-size: 13px;

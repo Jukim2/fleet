@@ -10,6 +10,7 @@ import AttentionPeek, { AttentionItem } from "./features/attention/AttentionPeek
 import OverviewPanel, { OverviewGroup } from "./features/overview/OverviewPanel";
 import SettingsPanel from "./features/settings/SettingsPanel";
 import WebPanel from "./features/web/WebPanel";
+import EmbedWebPane from "./features/web/EmbedWebPane";
 import PlanView from "./features/plan/PlanView";
 import LiveView from "./features/plan/LiveView";
 import "./features/presets/presets.css";
@@ -31,6 +32,11 @@ export default function App() {
   // here since it's global and shares the same rail as the main view).
   const [liveView, setLiveView] = useState(false);
   const [webOpen, setWebOpen] = useState(false);
+  // In-window embedded web AI pane (prototype): a right-side dock hosting a
+  // native child webview. Toggled from the view-tabs; hidden when any overlay
+  // should sit on top (native surfaces always paint above the DOM).
+  const [webDock, setWebDock] = useState(false);
+  const [webDockUrl, setWebDockUrl] = useState("https://chatgpt.com");
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [launchUpdate, setLaunchUpdate] = useState<UpdateAvailable | null>(null);
 
@@ -72,7 +78,7 @@ export default function App() {
         else setPeekOpen((o) => !o);
       } else if (k === "t" && fl.activeProjectId) {
         e.preventDefault();
-        fl.newTerm(fl.activeProjectId, "claude", "Claude");
+        fl.newTerm(fl.activeProjectId, fl.agent.startup(), fl.agent.label);
       } else if (k === "w" && fl.activeProjectId && fl.focusedTermId) {
         e.preventDefault();
         fl.closeTerm(fl.activeProjectId, fl.focusedTermId);
@@ -192,14 +198,16 @@ export default function App() {
     activity: f.activity,
     liveTool: f.liveTool,
     manifests: f.toolManifests,
+    presets: f.config.presets,
     liveCanvas: f.config.liveCanvas,
     onPlaceFrames: f.placeLiveFrames,
     onRemoveFrame: f.removeLiveFrame,
     onMoveNode: f.moveLiveNode,
     onSetCanvasView: f.setLiveCanvasView,
     onSetSideW: f.setLiveSideW,
+    onSetAutoArrange: f.setLiveAutoArrange,
     focusPid: f.activeProjectId,
-    onNewSession: (pid: string) => f.wakeTerm(f.newTerm(pid, "claude", "Claude")),
+    onNewSession: (pid: string) => f.wakeTerm(f.newTerm(pid, f.agent.startup(), f.agent.label)),
     onNewShell: (pid: string) => f.wakeTerm(f.newTerm(pid, "", "셸")),
     onWakeTerm: f.wakeTerm,
     onResumeSession: f.resumeInto,
@@ -209,10 +217,15 @@ export default function App() {
       setLiveView(false);
     },
     onDismissLiveTool: f.dismissLiveTool,
+    onRunPreset: f.runPreset,
   };
 
   return (
-    <div className={`app ${railOpen ? "rail-open" : ""} ${drawerOpen ? "drawer-open" : ""}`}>
+    <div
+      className={`app ${railOpen ? "rail-open" : ""} ${drawerOpen ? "drawer-open" : ""} ${
+        webDock ? "webdock-open" : ""
+      }`}
+    >
       <div className="rail-slot" aria-hidden={!railOpen}>
         <ProjectRail
           projects={f.config.projects}
@@ -262,6 +275,13 @@ export default function App() {
             >
               라이브
             </button>
+            <button
+              className={`stage-viewtab ${webDock ? "on" : ""}`}
+              onClick={() => setWebDock((v) => !v)}
+              title="웹 AI를 이 창 안에 도킹 (별도 창 없이)"
+            >
+              웹
+            </button>
           </div>
         )}
         {f.config.projects.length === 0 ? (
@@ -307,6 +327,7 @@ export default function App() {
                 presetsOpen={drawerOpen}
                 onTogglePresets={() => setDrawerOpen((o) => !o)}
                 wtActive={f.wtRuns[p.id] ? wtProgress(f.wtRuns[p.id]) : undefined}
+                agent={f.config.agent ?? "claude"}
               />
             ))
         )}
@@ -322,6 +343,38 @@ export default function App() {
           onNotice={f.pushToast}
         />
       </main>
+
+      <div className="webdock-slot" aria-hidden={!webDock}>
+        {webDock && (
+          <EmbedWebPane
+            label="embed-webdock"
+            url={webDockUrl}
+            profile="webdock"
+            title="웹"
+            hidden={
+              liveView ||
+              settingsOpen ||
+              paletteOpen ||
+              peekOpen ||
+              overviewOpen ||
+              webOpen ||
+              planOpen ||
+              drawerOpen
+            }
+            sites={
+              f.config.webTabs.length
+                ? f.config.webTabs.map((w) => ({ name: w.name, url: w.url }))
+                : [
+                    { name: "ChatGPT", url: "https://chatgpt.com" },
+                    { name: "Gemini", url: "https://gemini.google.com" },
+                    { name: "Claude", url: "https://claude.ai" },
+                  ]
+            }
+            onPickSite={setWebDockUrl}
+            onClose={() => setWebDock(false)}
+          />
+        )}
+      </div>
 
       <div className="drawer-slot" aria-hidden={!drawerOpen}>
       <Drawer
@@ -461,6 +514,14 @@ export default function App() {
           onScanTools={f.scanProjectTools}
           onRegisterToolViaAI={f.registerToolViaAI}
           onCloseAfterAction={() => setSettingsOpen(false)}
+          agent={f.config.agent ?? "claude"}
+          agents={f.agents}
+          onSetAgent={f.setAgent}
+          customAgentIds={Object.keys(f.config.customAgents ?? {})}
+          onAddCustomAgent={f.addCustomAgent}
+          onRemoveCustomAgent={f.removeCustomAgent}
+          theme={f.config.theme ?? "slate"}
+          onSetTheme={f.setTheme}
         />
       )}
 

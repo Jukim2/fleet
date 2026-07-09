@@ -1,9 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { deleteClaudeSession, listClaudeSessions } from "../api/claude";
 import { ClaudeSession, Project } from "../types";
+import { AgentKind } from "../lib/agents";
 
-/** Loads (and caches) the resumable Claude sessions for the active project. */
-export function useClaudeSessions(activeProjectId: string | null, projects: Project[]) {
+/** Loads (and caches) the resumable sessions for the active project + agent. */
+export function useClaudeSessions(
+  activeProjectId: string | null,
+  projects: Project[],
+  agent: AgentKind = "claude",
+) {
   const [byProject, setByProject] = useState<Record<string, ClaudeSession[]>>({});
   const [loading, setLoading] = useState(false);
 
@@ -12,6 +17,8 @@ export function useClaudeSessions(activeProjectId: string | null, projects: Proj
   // render would make that effect churn.
   const projectsRef = useRef(projects);
   projectsRef.current = projects;
+  const agentRef = useRef(agent);
+  agentRef.current = agent;
   // Mirror of byProject for the cache check inside the stable `load` callback.
   const byProjectRef = useRef(byProject);
   byProjectRef.current = byProject;
@@ -25,7 +32,7 @@ export function useClaudeSessions(activeProjectId: string | null, projects: Proj
       if (!force && byProjectRef.current[projectId]) return; // already cached
       if (!silent) setLoading(true);
       try {
-        const list = await listClaudeSessions(proj.path);
+        const list = await listClaudeSessions(proj.path, agentRef.current);
         setByProject((s) => ({ ...s, [projectId]: list }));
       } catch (e) {
         // Don't leave `sessions` as null on error — that renders a blank panel
@@ -40,9 +47,15 @@ export function useClaudeSessions(activeProjectId: string | null, projects: Proj
     [],
   );
 
+  // Switching the active agent invalidates every cached list (a project's codex
+  // sessions differ from its claude ones) — clear so they re-scan on demand.
   useEffect(() => {
-    if (activeProjectId) load(activeProjectId);
-  }, [activeProjectId, projects.length, load]);
+    setByProject({});
+  }, [agent]);
+
+  useEffect(() => {
+    if (activeProjectId) load(activeProjectId, true);
+  }, [activeProjectId, projects.length, agent, load]);
 
   // Periodically re-scan the active project's transcripts so newly created or
   // updated sessions show up without a manual refresh.
@@ -68,7 +81,7 @@ export function useClaudeSessions(activeProjectId: string | null, projects: Proj
         [pid]: (s[pid] ?? []).filter((x) => x.id !== session.id),
       }));
       try {
-        await deleteClaudeSession(proj.path, session.id);
+        await deleteClaudeSession(proj.path, session.id, agentRef.current);
       } catch (e) {
         console.error("[fleet] delete_claude_session failed:", e);
         load(pid, true);

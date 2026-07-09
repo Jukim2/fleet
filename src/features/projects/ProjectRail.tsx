@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useState, type CSSProperties } from "react";
 import { ClaudeSession, Project } from "../../types";
 import "./projects.css";
 
@@ -8,6 +8,20 @@ function relTime(unix: number): string {
   if (diff < 3600) return `${Math.floor(diff / 60)}분 전`;
   if (diff < 86400) return `${Math.floor(diff / 3600)}시간 전`;
   return `${Math.floor(diff / 86400)}일 전`;
+}
+
+/** Deterministic hue (0–359) from a string, so each project gets a stable
+    tinted avatar that makes it recognizable at a glance in the rail. */
+function projectHue(seed: string): number {
+  let h = 0;
+  for (let i = 0; i < seed.length; i++) h = (h * 31 + seed.charCodeAt(i)) >>> 0;
+  return h % 360;
+}
+
+/** First meaningful character of the project name, for the avatar glyph. */
+function projectInitial(name: string): string {
+  const c = name.trim()[0];
+  return c ? c.toUpperCase() : "•";
 }
 
 /** "claude-opus-4-8" → "Opus 4.8"; falls back to a trimmed id. */
@@ -103,7 +117,13 @@ export default function ProjectRail({
               if (from && from !== p.id) onReorder(from, p.id);
             }}
           >
-            <span className="folder">▸</span>
+            <span
+              className="rail-avatar"
+              style={{ "--pj-hue": projectHue(p.id || p.name) } as CSSProperties}
+              aria-hidden
+            >
+              {projectInitial(p.name)}
+            </span>
             <span className="rail-name" title={p.path}>
               {p.name}
             </span>

@@ -1,0 +1,43 @@
+/* In-window embedded web pane (right dock). The actual site is a native child
+   webview overlaid on .embedweb-slot; these styles are just the frame + header. */
+.embedweb {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-width: 0;
+  background: var(--bg, #101014);
+  border-left: 1px solid var(--border, #2a2a33);
+}
+.embedweb-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border, #2a2a33);
+  flex: 0 0 auto;
+}
+.embedweb-site {
+  background: var(--bg-soft, #1a1a22);
+  color: var(--fg, #e4e4e7);
+  border: 1px solid var(--border, #2a2a33);
+  border-radius: 6px;
+  padding: 3px 6px;
+  font-size: 12px;
+  max-width: 220px;
+}
+.embedweb-spacer {
+  flex: 1 1 auto;
+}
+.embedweb-slot {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.embedweb-hint {
+  color: var(--fg-dim, #71717a);
+  font-size: 12px;
+  user-select: none;
+}

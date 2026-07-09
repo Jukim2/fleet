@@ -11,11 +11,13 @@
 //
 // Shared state (`pty::Sessions`, `bridge::WebQueue`) is managed in `run()`;
 // each Tauri command lives in its concern's module and is registered below.
+mod agentwatch;
 mod attach;
 mod bridge;
 mod cdp;
 mod config;
 mod diagnostics;
+mod embed;
 mod exec;
 mod git;
 mod pty;
@@ -44,6 +46,7 @@ pub fn run() {
         .manage(pty::Sessions::default())
         .manage(bridge::WebQueue::default())
         .manage(tools::ToolJobs::default())
+        .manage(agentwatch::AgentWatchers::default())
         .setup(|app| {
             bridge::start_hook_server(app.handle().clone());
             Ok(())
@@ -60,6 +63,9 @@ pub fn run() {
             sessions::list_claude_sessions,
             sessions::delete_claude_session,
             sessions::import_session_transcript,
+            agentwatch::watch_agent_session,
+            agentwatch::unwatch_agent_session,
+            agentwatch::read_agent_manifest,
             config::load_config,
             config::save_config,
             config::read_plan,
@@ -83,6 +89,10 @@ pub fn run() {
             webtabs::web_eval_cb,
             webtabs::close_web_tab,
             webtabs::web_tab_open,
+            embed::embed_web_create,
+            embed::embed_web_bounds,
+            embed::embed_web_show,
+            embed::embed_web_close,
             cdp::cdp_open,
             cdp::cdp_targets,
             cdp::cdp_eval,

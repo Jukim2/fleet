@@ -20,6 +20,7 @@ import { openPath } from "../api/system";
 import { clearPlan, plannerPrompt, readPlan } from "../api/planner";
 import { clearPreset, presetGenPrompt, readPreset, GeneratedPreset } from "../api/presetgen";
 import { presetBody } from "../lib/presets";
+import { applyTheme, DEFAULT_THEME, ThemeId } from "../lib/themes";
 import { describeActivity } from "../lib/activity";
 import { detectToolUse, mergeManifests, parseToolManifest } from "../lib/tools";
 import { readToolManifest } from "../api/tools";
@@ -44,8 +45,17 @@ import {
   removeNode,
   type RunTarget,
   buildRunBoard,
-  claudeStartup,
 } from "../lib/plan";
+import {
+  AgentKind,
+  getAgent,
+  activeAgent,
+  agentOf,
+  defaultTitleRe,
+  installAgents,
+  parseAgentManifest,
+} from "../lib/agents";
+import { readAgentManifest } from "../api/agent";
 import {
   compact,
   firstLeaf,
@@ -272,6 +282,42 @@ export function useFleet() {
   const genTimer = useRef<number | null>(null);
   const loaded = useRef(false);
 
+  /** Rebuild the agent registry (built-ins + user manifests) whenever the
+   *  connected manifests change. Runs during render so `agent`/`agents` below
+   *  read the fresh registry on the same pass. */
+  const agents = useMemo(() => Object.values(installAgents(config.customAgents)), [config.customAgents]);
+  /** the active coding-agent CLI spec (Claude by default). New sessions, the
+   *  resume list, and status detection key off this global setting. */
+  const agent = activeAgent(config.agent);
+  /** Switch the active agent CLI. Existing terminals keep their own startup
+   *  command (and scrollback); only new sessions + the resume list change. */
+  const setAgent = (kind: AgentKind) => setConfig((c) => ({ ...c, agent: kind }));
+
+  /** Connect a coding agent from a folder holding `fleet-agent.json`: read +
+   *  validate it, persist the raw manifest, and make it selectable. */
+  const addCustomAgent = async (root: string): Promise<boolean> => {
+    try {
+      const raw = JSON.parse(await readAgentManifest(root)) as unknown;
+      const m = parseAgentManifest(raw); // throws with a Korean message
+      setConfig((c) => ({ ...c, customAgents: { ...(c.customAgents ?? {}), [m.id]: raw } }));
+      pushToast("ok", `에이전트 연결됨 — ${m.label}`);
+      return true;
+    } catch (e) {
+      pushToast("err", e instanceof Error ? e.message : String(e));
+      return false;
+    }
+  };
+
+  /** Disconnect a user-connected agent (built-ins can't be removed). Falls the
+   *  active selection back to Claude if the removed one was active. */
+  const removeCustomAgent = (agentId: string) =>
+    setConfig((c) => {
+      const customAgents = { ...(c.customAgents ?? {}) };
+      delete customAgents[agentId];
+      return { ...c, customAgents, agent: c.agent === agentId ? "claude" : c.agent };
+    });
+  const setTheme = (theme: ThemeId) => setConfig((c) => ({ ...c, theme }));
+
   /** live worktree-pipeline runs, keyed by projectId (non-persisted) */
   const [wtRuns, setWtRuns] = useState<Record<string, WtRun>>({});
   const wtRunsRef = useRef(wtRuns);
@@ -351,7 +397,7 @@ export function useFleet() {
     loading: sessionsLoading,
     refresh: refreshSessions,
     remove: removeSession,
-  } = useClaudeSessions(activeProjectId, config.projects);
+  } = useClaudeSessions(activeProjectId, config.projects, agent.sessionMode);
 
   /** Resume session ids that already have a terminal tab in the active project,
    *  mapped to that terminal — so the rail can mark them and jump instead of
@@ -361,8 +407,8 @@ export function useFleet() {
     if (!activeProjectId) return m;
     for (const t of config.terminals) {
       if (t.projectId !== activeProjectId) continue;
-      const match = /^claude --resume (\S+)/.exec(t.startup);
-      if (match) m[match[1]] = t.id;
+      const id = agentOf(t.startup).resumeIdOf(t.startup);
+      if (id) m[id] = t.id;
     }
     return m;
   }, [activeProjectId, config.terminals]);
@@ -406,6 +452,12 @@ export function useFleet() {
   useEffect(() => {
     if (loaded.current) saveConfig(config);
   }, [config]);
+
+  // Apply the selected theme (writes CSS vars on <html> + notifies terminals).
+  // Runs on mount (→ default) and whenever the persisted theme changes.
+  useEffect(() => {
+    applyTheme((config.theme as ThemeId) ?? DEFAULT_THEME);
+  }, [config.theme]);
 
   // Auto-submit a queued prompt into a freshly spawned session once it reports
   // idle (claude finished booting). Used by resolveFinalize so the user doesn't
@@ -487,7 +539,12 @@ export function useFleet() {
   const addProject = (path: string) => {
     const name = path.split(/[\\/]/).filter(Boolean).pop() || path;
     const project: Project = { id: uid(), name, path };
-    const term: Terminal = { id: uid(), projectId: project.id, title: "Claude 1", startup: "claude" };
+    const term: Terminal = {
+      id: uid(),
+      projectId: project.id,
+      title: `${agent.label} 1`,
+      startup: agent.startup(),
+    };
     const leaf = newLeaf(term.id);
     setConfig((c) => ({
       ...c,
@@ -637,7 +694,7 @@ export function useFleet() {
     patchLayout(projectId, (n) => (n ? compact(setLeafTerm(n, paneId, termId)) : n));
   const splitPane = (projectId: string, paneId: string, dir: "row" | "col") => {
     const n = config.terminals.filter((t) => t.projectId === projectId).length + 1;
-    const term: Terminal = { id: uid(), projectId, title: `Claude ${n}`, startup: "claude" };
+    const term: Terminal = { id: uid(), projectId, title: `${agent.label} ${n}`, startup: agent.startup() };
     const sib = newLeaf(term.id);
     setConfig((c) => ({
       ...c,
@@ -752,8 +809,10 @@ export function useFleet() {
       return { ...c, presetBodies: { ...c.presetBodies, [projectId]: forProject } };
     });
 
-  /** Run a preset using THIS project's body. */
-  const runPreset = (projectId: string, presetId: string) => {
+  /** Run a preset using THIS project's body. `termId` explicitly targets a
+   *  session for "ai" presets (the live canvas passes the frame's session);
+   *  otherwise the focused terminal is used. */
+  const runPreset = (projectId: string, presetId: string, termId?: string) => {
     const c = configRef.current;
     const preset = c.presets.find((x) => x.id === presetId);
     if (!preset) return;
@@ -763,9 +822,10 @@ export function useFleet() {
       return;
     }
     if (preset.kind === "ai") {
-      if (focusedTermId) {
-        sendPrompt(focusedTermId, body);
-        pushToast("ok", `${preset.name} → 현재 터미널`);
+      const target = termId ?? focusedTermId;
+      if (target) {
+        sendPrompt(target, body);
+        pushToast("ok", `${preset.name} 전송됨`);
       } else {
         pushToast("err", "전송할 터미널이 없어요");
       }
@@ -802,7 +862,7 @@ export function useFleet() {
     clearPreset(cwd).catch(() => {});
     const termId = spawnVisibleTerminal(
       projectId,
-      "claude --permission-mode acceptEdits",
+      agent.startup({ accept: true }),
       `프리셋: ${preset.name}`,
     );
     let sent = false;
@@ -932,9 +992,9 @@ export function useFleet() {
   /** Create the session a spawn lane needs (a hidden terminal that mounts and
    *  runs claude/shell), bind it to the lane, and return its id. */
   const spawnLaneTerminal = (projectId: string, lane: Lane): string => {
-    const startup = lane.target.kind === "spawn" ? lane.target.startup : "claude";
+    const startup = lane.target.kind === "spawn" ? lane.target.startup : agent.startup();
     const id = uid();
-    const term: Terminal = { id, projectId, title: lane.title || "Claude", startup };
+    const term: Terminal = { id, projectId, title: lane.title || agent.label, startup };
     setConfig((c) => ({ ...c, terminals: [...c.terminals, term] }));
     patchBoard(projectId, (b) => ({
       ...b,
@@ -1109,7 +1169,7 @@ export function useFleet() {
     clearPlan(cwd).catch(() => {});
     // Planner runs in acceptEdits mode so it can write .fleet/plan.json without
     // a manual permission Enter — it only reads the repo and writes one file.
-    const termId = spawnVisibleTerminal(projectId, "claude --permission-mode acceptEdits", "Planner");
+    const termId = spawnVisibleTerminal(projectId, agent.startup({ accept: true }), "Planner");
     let sent = false;
     let tries = 0;
     const stop = () => {
@@ -1183,13 +1243,14 @@ export function useFleet() {
   const runSteps = (projectId: string, stepIds: string[], target: RunTarget) => {
     const plan = configRef.current.plans[projectId];
     if (!plan || !stepIds.length) return;
+    const agentKind = configRef.current.agent ?? "claude";
     if (target.worktree) {
-      startWtRun(projectId, stepIds, !!target.auto, target.effort);
+      startWtRun(projectId, stepIds, !!target.auto, agentKind, target.effort);
       return;
     }
     const termTitle = (id: string) =>
       configRef.current.terminals.find((t) => t.id === id)?.title ?? "세션";
-    const { lanes, tasks } = buildRunBoard(plan, stepIds, target, termTitle);
+    const { lanes, tasks } = buildRunBoard(plan, stepIds, { ...target, agent: agentKind }, termTitle);
     const next = { ...taskStatusRef.current };
     for (const id of stepIds) delete next[id];
     taskStatusRef.current = next;
@@ -1274,9 +1335,10 @@ export function useFleet() {
     projectId: string,
     stepIds: string[],
     auto: boolean,
+    agentKind: AgentKind,
     effort?: RunTarget["effort"],
   ) => {
-    console.log("[wt] startWtRun", { projectId, stepIds, auto, effort });
+    console.log("[wt] startWtRun", { projectId, stepIds, auto, agentKind, effort });
     const project = configRef.current.projects.find((p) => p.id === projectId);
     const plan = configRef.current.plans[projectId];
     if (!project || !plan) {
@@ -1303,17 +1365,23 @@ export function useFleet() {
       return;
     }
     const slug = uid().slice(0, 6);
-    const run = { ...buildWtRun(projectId, project.path, plan, stepIds, auto, slug, effort), startedAt: Date.now() };
+    const run = {
+      ...buildWtRun(projectId, project.path, plan, stepIds, auto, slug, agentKind, effort),
+      startedAt: Date.now(),
+    };
     clearWtLastRun(projectId); // a new run supersedes the archived one
     clearWtFix(projectId); // and clears any stuck-merge banner from before
     setWtMsg((m) => ({ ...m, [projectId]: `worktree 파이프라인 시작… (${run.steps.length}개 소블럭, ${run.branch})` }));
     // Pre-clear Claude Code's first-run gates (folder-trust per worktree dir,
     // plus the --dangerously-skip-permissions warning in auto mode) so the
-    // sessions don't hang on a startup dialog the runner can't get past.
-    try {
-      await prepareClaudeAuto([...run.steps.map((s) => s.dir), run.integDir], auto);
-    } catch (e) {
-      console.warn("[wt] prepareClaudeAuto failed (continuing)", e);
+    // sessions don't hang on a startup dialog the runner can't get past. Codex
+    // has no such gates in bypass mode, so this is claude-only.
+    if (agentKind === "claude") {
+      try {
+        await prepareClaudeAuto([...run.steps.map((s) => s.dir), run.integDir], auto);
+      } catch (e) {
+        console.warn("[wt] prepareClaudeAuto failed (continuing)", e);
+      }
     }
     try {
       await wtSetup(run.cwd, run.integDir, run.branch);
@@ -1400,12 +1468,14 @@ export function useFleet() {
     const fix = wtFixRef.current[projectId];
     if (!fix) return;
     // Clear Claude's first-run gates so an auto session can run git unattended.
-    try {
-      await prepareClaudeAuto([fix.cwd], true);
-    } catch (e) {
-      console.warn("[wt] prepareClaudeAuto (resolveFinalize) failed", e);
+    if (agent.kind === "claude") {
+      try {
+        await prepareClaudeAuto([fix.cwd], true);
+      } catch (e) {
+        console.warn("[wt] prepareClaudeAuto (resolveFinalize) failed", e);
+      }
     }
-    const termId = spawnWorktreeTerminal(projectId, claudeStartup(true), "🤖 병합 해결", fix.cwd);
+    const termId = spawnWorktreeTerminal(projectId, agent.startup({ auto: true }), "🤖 병합 해결", fix.cwd);
     autoSubmit.current[termId] = { text: finalizeFixPrompt(fix), sent: false };
     revealTerm(projectId, termId);
     clearWtFix(projectId);
@@ -1440,7 +1510,7 @@ export function useFleet() {
     if (!text) return;
     const term = configRef.current.terminals.find((t) => t.id === termId);
     if (!term || term.renamed) return;
-    const isDefault = /^Claude(\s*\d+)?$/i.test(term.title.trim());
+    const isDefault = defaultTitleRe().test(term.title.trim());
     const newSession = !!autoTitled.current[termId] && autoTitled.current[termId] !== sessionId;
     if (!isDefault && !newSession) return;
     autoTitled.current[termId] = sessionId;
@@ -1524,7 +1594,7 @@ export function useFleet() {
     const cfg = configRef.current;
     const term = cfg.terminals.find((t) => t.id === termId);
     const project = term && cfg.projects.find((p) => p.id === term.projectId);
-    const where = [project?.name, term?.title].filter(Boolean).join(" · ") || "Claude";
+    const where = [project?.name, term?.title].filter(Boolean).join(" · ") || agent.label;
     // Ping (OS + clickable in-app toast) so parallel sessions surface themselves.
     // Skip the in-app toast for the session you're already looking at.
     const jump = term ? { projectId: term.projectId, termId } : undefined;
@@ -1654,11 +1724,12 @@ export function useFleet() {
                   changed = true;
                   continue;
                 }
-                const startup = claudeStartup(run.auto, run.effort);
+                const startup = getAgent(run.agent).startup({ auto: run.auto, effort: run.effort });
                 // Re-assert the trust gate just before launch: the worktree dir
                 // now exists, and another running claude may have rewritten
                 // ~/.claude.json since startWtRun, dropping our pre-trust.
-                await prepareClaudeAuto([step.dir], run.auto).catch(() => {});
+                if (run.agent === "claude")
+                  await prepareClaudeAuto([step.dir], run.auto).catch(() => {});
                 step.termId = spawnWorktreeTerminal(projectId, startup, `▶ ${step.title}`, step.dir);
                 // Tile into its own pane: visible AND a real PTY size, so several
                 // steps run concurrently without pushing each other to 0-size.
@@ -1736,10 +1807,11 @@ export function useFleet() {
                     if (step.termId) closeTerm(projectId, step.termId);
                     step.termId = undefined;
                   } else {
-                    await prepareClaudeAuto([run.integDir], true).catch(() => {});
+                    if (run.agent === "claude")
+                      await prepareClaudeAuto([run.integDir], true).catch(() => {});
                     step.resolveTermId = spawnWorktreeTerminal(
                       projectId,
-                      claudeStartup(true, run.effort),
+                      getAgent(run.agent).startup({ auto: true, effort: run.effort }),
                       `⚠ ${step.title} 충돌해결`,
                       run.integDir,
                     );
@@ -1892,8 +1964,8 @@ export function useFleet() {
     // Carry the original session's identity over: name the resumed terminal after
     // its summary (first user message) instead of a fresh "Claude ↺ N" counter.
     const label = s.summary.replace(/\s+/g, " ").trim().slice(0, 24);
-    const title = label || "Claude ↺";
-    newTerm(activeProjectId, `claude --resume ${s.id}`, "Claude ↺", title);
+    const base = `${agent.label} ↺`;
+    newTerm(activeProjectId, agent.resume(s.id), base, label || base);
   };
 
   /** Delete a transcript from disk and drop it from the resume list. */
@@ -1915,14 +1987,15 @@ export function useFleet() {
    *  resume tab for the same transcript instead of spawning a duplicate. */
   const resumeInto = (projectId: string, s: ClaudeSession) => {
     const existing = configRef.current.terminals.find(
-      (t) => t.projectId === projectId && /--resume (\S+)/.exec(t.startup)?.[1] === s.id,
+      (t) => t.projectId === projectId && agentOf(t.startup).resumeIdOf(t.startup) === s.id,
     );
     if (existing) {
       wakeTerm(existing.id);
       return;
     }
     const label = s.summary.replace(/\s+/g, " ").trim().slice(0, 24);
-    const id = newTerm(projectId, `claude --resume ${s.id}`, "Claude ↺", label || "Claude ↺");
+    const base = `${agent.label} ↺`;
+    const id = newTerm(projectId, agent.resume(s.id), base, label || base);
     wakeTerm(id);
   };
 
@@ -1994,7 +2067,7 @@ export function useFleet() {
       pushToast("err", "먼저 프로젝트를 하나 추가하세요");
       return;
     }
-    const id = spawnWorktreeTerminal(projectId, "claude", "AI 툴 등록", folder);
+    const id = spawnWorktreeTerminal(projectId, agent.startup(), "AI 툴 등록", folder);
     revealTerm(projectId, id);
     selectProject(projectId);
     wakeTerm(id);
@@ -2042,6 +2115,10 @@ export function useFleet() {
   /** Remember the left sidebar width (user-dragged). */
   const setLiveSideW = (sideW: number) => patchLiveCanvas((lc) => ({ ...lc, sideW }));
 
+  /** Toggle auto-arrange (re-flow a frame's nodes on resize / session add). */
+  const setLiveAutoArrange = (autoArrange: boolean) =>
+    patchLiveCanvas((lc) => ({ ...lc, autoArrange }));
+
   /** Type a prompt into a session's claude TUI (with the submitting CR). */
   const promptTerm = (termId: string, text: string) => {
     if (!text.trim()) return;
@@ -2082,6 +2159,12 @@ export function useFleet() {
 
   return {
     config,
+    agent,
+    agents,
+    setAgent,
+    addCustomAgent,
+    removeCustomAgent,
+    setTheme,
     statuses,
     taskStatus,
     activeProjectId,
@@ -2105,6 +2188,7 @@ export function useFleet() {
     moveLiveNode,
     setLiveCanvasView,
     setLiveSideW,
+    setLiveAutoArrange,
     promptTerm,
     woken,
     wakeTerm,

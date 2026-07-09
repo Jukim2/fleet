@@ -4,13 +4,13 @@ import { FitAddon } from "@xterm/addon-fit";
 import { listen } from "@tauri-apps/api/event";
 import "@xterm/xterm/css/xterm.css";
 import { resizePty, spawnSession } from "../../api/pty";
+import { watchAgentSession, unwatchAgentSession } from "../../api/agent";
 import { attachInput } from "./imeBridge";
 import { TermStatus } from "../../types";
+import { agentOf } from "../../lib/agents";
+import { readTermColors } from "../../lib/themes";
 
 type PtyOutput = { id: string; data: string };
-
-// Claude Code shows this hint in its status line only while a turn is running.
-const WORKING_RE = /esc to interrupt/i;
 
 // Terminal font size is a single global preference (Ctrl +/-/0, Ctrl+wheel),
 // persisted in localStorage and broadcast so every live terminal stays in sync.
@@ -29,18 +29,11 @@ function clampFont(n: number): number {
   return Math.min(FONT_MAX, Math.max(FONT_MIN, Math.round(n)));
 }
 
-// Rewrite a claude startup command to resume `sessionId`, preserving any flags
-// (--effort, --dangerously-skip-permissions, --permission-mode, …). Non-claude
-// startups (plain shell "") are returned unchanged so we never resume into them.
+// Rewrite an agent startup command to resume `sessionId`, preserving any flags.
+// Non-agent startups (plain shell "") are returned unchanged (agentOf → claude,
+// whose toResume no-ops when the command isn't `claude …`).
 function resumeCommand(startup: string, sessionId: string): string {
-  const s = startup.trim();
-  if (!/^claude(\s|$)/.test(s)) return startup;
-  const flags = s
-    .replace(/^claude\b/, "")
-    .replace(/\s--resume(?:=|\s+)\S+/g, "") // drop any pre-baked --resume <id>
-    .replace(/\s-r(?:=|\s+)\S+/g, "")
-    .trim();
-  return `claude --resume ${sessionId}${flags ? " " + flags : ""}`;
+  return agentOf(startup).toResume(startup, sessionId);
 }
 
 export default function Terminal({
@@ -74,12 +67,9 @@ export default function Terminal({
       fontFamily:
         "Menlo, Monaco, 'SF Mono', 'Cascadia Mono', 'Cascadia Code', Consolas, 'DejaVu Sans Mono', monospace",
       cursorBlink: true,
-      theme: {
-        background: "#101014",
-        foreground: "#e4e4e7",
-        cursor: "#a78bfa",
-        selectionBackground: "#3b3b46",
-      },
+      // Terminal colors come from the active theme's CSS vars, read live so the
+      // xterm palette matches the rest of the UI (and updates on theme switch).
+      theme: readTermColors(),
       scrollback: 8000,
     });
     const fit = new FitAddon();
@@ -121,6 +111,13 @@ export default function Terminal({
     // Sync when another terminal changes the size.
     const onFontEvent = (e: Event) => applyFont((e as CustomEvent<number>).detail, false);
     window.addEventListener(FONT_EVENT, onFontEvent);
+
+    // Re-pull the terminal palette when the user switches theme (the CSS vars on
+    // <html> have already changed by the time this fires).
+    const onThemeEvent = () => {
+      term.options.theme = readTermColors();
+    };
+    window.addEventListener("fleet-theme", onThemeEvent);
 
     // Ctrl/Cmd+wheel zooms the font. This must run BEFORE xterm's own wheel
     // handler (and beat the browser's page-zoom), so it's a capture-phase
@@ -189,6 +186,10 @@ export default function Terminal({
       return true;
     });
 
+    // Which agent this terminal runs (from its startup command) — decides the
+    // screen-scan patterns and whether we tail a structured rollout log.
+    const spec = agentOf(startup);
+
     // Resume the terminal's last claude conversation on cold start instead of
     // booting a fresh one. `resumeId` is only set for terminals restored from a
     // previous run (a brand-new tab has none → plain `startup`).
@@ -206,20 +207,39 @@ export default function Terminal({
       spawnSession(id, cwd, term.cols, term.rows, spawnCmd).catch((err) =>
         term.writeln(`\r\n[fleet] spawn error: ${err}`),
       );
+      // A respawn creates a NEW agent session (new rollout file) — rebind.
+      if (spec.statusMode === "rollout") {
+        unwatchAgentSession(id).catch(() => {});
+        watchAgentSession(id, cwd, Date.now(), spec.rolloutDir || undefined).catch(() => {});
+      }
     };
     window.addEventListener("fleet-respawn", onRespawn);
 
-    // Read the visible viewport and decide busy vs idle from what Claude's TUI
-    // is actually showing: the "esc to interrupt" hint is present only while a
-    // turn is running. This reflects the real screen, not output timing.
+    // Screen-scan FALLBACK: read the visible viewport and decide busy/idle (and,
+    // where known, blocked-on-approval) from what the agent's TUI is showing —
+    // the "esc to interrupt" hint is present only while a turn runs. This is only
+    // a fallback: structured status (Claude hooks, or the codex rollout watcher
+    // below) overrides it in useFleet once those events start arriving.
+    const busyRe = spec.screenBusyRe ?? /esc to interrupt/i;
     const scan = () => {
       const buf = term.buffer.active;
       let text = "";
       for (let r = 0; r < term.rows; r++) {
         text += (buf.getLine(buf.baseY + r)?.translateToString(true) ?? "") + "\n";
       }
-      onStatus?.(id, WORKING_RE.test(text) ? "busy" : "idle");
+      const status: TermStatus = spec.screenWaitingRe?.test(text)
+        ? "waiting"
+        : busyRe.test(text)
+          ? "busy"
+          : "idle";
+      onStatus?.(id, status);
     };
+    // "rollout" agents (codex): tail the session's structured event log so status
+    // comes from real events, not the screen. Bound to this terminal by cwd +
+    // spawn time in the backend; stopped on unmount below.
+    if (spec.statusMode === "rollout") {
+      watchAgentSession(id, cwd, Date.now(), spec.rolloutDir || undefined).catch(() => {});
+    }
     // Trailing throttle: at most one scan per 150ms, and one after the last frame.
     const scheduleScan = () => {
       if (scanTimer.current) return;
@@ -267,6 +287,11 @@ export default function Terminal({
         try {
           fit.fit();
           resizePty(id, term.cols, term.rows);
+          // Force a full repaint of every visible row. After the FitAddon changes
+          // the terminal's dimensions, the DOM renderer can leave stale row cells
+          // behind — reflowed scrollback then reads as garbled when you scroll up.
+          // Repainting the whole viewport clears that residue.
+          term.refresh(0, term.rows - 1);
         } catch {
           /* hidden */
         }
@@ -280,11 +305,13 @@ export default function Terminal({
       imeRef.current = null;
       ime.dispose();
       window.removeEventListener(FONT_EVENT, onFontEvent);
+      window.removeEventListener("fleet-theme", onThemeEvent);
       window.removeEventListener("blur", onWindowBlur);
       window.removeEventListener("fleet-respawn", onRespawn);
       host.removeEventListener("wheel", onWheelCapture, { capture: true });
       unlistenOut.then((f) => f());
       unlistenExit.then((f) => f());
+      if (spec.statusMode === "rollout") unwatchAgentSession(id).catch(() => {});
       ro.disconnect();
       term.dispose();
     };
@@ -303,7 +330,10 @@ export default function Terminal({
     const t = window.setTimeout(() => {
       try {
         fitRef.current?.fit();
-        if (termRef.current) resizePty(id, termRef.current.cols, termRef.current.rows);
+        if (termRef.current) {
+          resizePty(id, termRef.current.cols, termRef.current.rows);
+          termRef.current.refresh(0, termRef.current.rows - 1);
+        }
         termRef.current?.focus();
       } catch {
         /* */

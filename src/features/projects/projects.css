@@ -35,59 +35,104 @@
 .rail-item {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 7px 8px;
-  border-radius: 8px;
+  gap: 9px;
+  padding: 6px 8px 6px 7px;
+  border-radius: var(--r-md);
   color: var(--muted);
   user-select: none;
+  position: relative;
+  transition:
+    background var(--dur-fast) var(--ease-out),
+    color var(--dur-fast) var(--ease-out);
 }
 .rail-item:hover {
-  background: rgba(255, 255, 255, 0.04);
+  background: var(--hover);
   color: var(--text);
 }
 .rail-item.active {
-  background: rgba(167, 139, 250, 0.14);
+  background: var(--accent-weak);
   color: var(--text);
 }
-.folder {
-  font-size: 10px;
-  opacity: 0.7;
+/* macOS-sidebar selection accent: a short rounded bar on the leading edge. */
+.rail-item.active::before {
+  content: "";
+  position: absolute;
+  left: -2px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 3px;
+  height: 16px;
+  border-radius: 3px;
+  background: var(--accent);
+}
+
+/* Tinted rounded "app-icon" avatar with the project initial — its hue is
+   derived per-project (--pj-hue) so each folder is recognizable at a glance. */
+.rail-avatar {
+  flex-shrink: 0;
+  width: 24px;
+  height: 24px;
+  border-radius: 7px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+  color: #fff;
+  background: linear-gradient(
+    150deg,
+    hsl(var(--pj-hue, 220) 62% 60%),
+    hsl(var(--pj-hue, 220) 55% 47%)
+  );
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.22),
+    0 1px 2px rgba(0, 0, 0, 0.25);
+  text-shadow: 0 1px 1px rgba(0, 0, 0, 0.28);
+  transition: transform var(--dur-fast) var(--ease-out);
+}
+.rail-item:hover .rail-avatar {
+  transform: scale(1.06);
 }
 .rail-name {
   flex: 1;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  font-size: 13px;
+}
+.rail-item.active .rail-name {
+  font-weight: 600;
 }
 .rail-dot {
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background: var(--green);
+  background: var(--idle);
   flex-shrink: 0;
 }
-/* Status-colored rail dot: idle = green, busy = purple, waiting (needs you)
+/* Status-colored rail dot: idle = green, busy = accent, waiting (needs you)
    = amber and pulsing so it draws the eye across many projects. */
 .rail-dot.idle {
-  background: var(--green);
+  background: var(--idle);
 }
 .rail-dot.busy {
-  background: var(--accent);
+  background: var(--busy);
 }
 .rail-dot.waiting {
-  background: var(--amber);
-  box-shadow: 0 0 0 0 rgba(251, 191, 36, 0.6);
+  background: var(--waiting);
+  box-shadow: 0 0 0 0 var(--waiting-weak);
   animation: rail-dot-pulse 1.4s ease-out infinite;
 }
 @keyframes rail-dot-pulse {
   0% {
-    box-shadow: 0 0 0 0 rgba(251, 191, 36, 0.55);
+    box-shadow: 0 0 0 0 var(--waiting-weak);
   }
   70% {
-    box-shadow: 0 0 0 5px rgba(251, 191, 36, 0);
+    box-shadow: 0 0 0 5px color-mix(in srgb, var(--waiting) 0%, transparent);
   }
   100% {
-    box-shadow: 0 0 0 0 rgba(251, 191, 36, 0);
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--waiting) 0%, transparent);
   }
 }
 /* amber count badge: how many sessions in this project await your approval */
@@ -102,9 +147,9 @@
   border-radius: 8px;
   font-size: 10px;
   font-weight: 700;
-  color: #1a1205;
-  background: var(--amber);
-  box-shadow: 0 0 0 0 rgba(251, 191, 36, 0.6);
+  color: var(--on-accent);
+  background: var(--waiting);
+  box-shadow: 0 0 0 0 var(--waiting-weak);
   animation: rail-dot-pulse 1.4s ease-out infinite;
 }
 .rail-x {
@@ -125,13 +170,14 @@
   background: none;
   border: 1px dashed var(--border);
   color: var(--muted);
-  border-radius: 8px;
+  border-radius: var(--r-md);
   padding: 8px;
   font-size: 13px;
 }
 .rail-add:hover {
-  border-color: var(--accent);
+  border-color: var(--border-strong);
   color: var(--text);
+  background: var(--hover);
 }
 
 /* Sessions panel */
@@ -151,8 +197,10 @@
   align-items: center;
   justify-content: space-between;
   font-size: 11px;
-  color: var(--muted);
-  padding: 0 4px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  color: var(--faint);
+  padding: 0 4px 2px;
 }
 .icon-btn {
   background: none;
@@ -181,23 +229,29 @@
 .session {
   background: none;
   border: 1px solid transparent;
-  border-radius: 7px;
-  padding: 6px 8px;
+  border-radius: var(--r-md);
+  padding: 7px 9px;
   text-align: left;
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 3px;
   color: var(--text);
   min-width: 0;
   overflow: hidden;
   width: 100%;
+  transition:
+    background var(--dur-fast) var(--ease-out),
+    border-color var(--dur-fast) var(--ease-out);
   /* In the scrollable flex column the rows must not shrink below their content
      height, or the list crushes them into clipped slivers instead of scrolling. */
   flex-shrink: 0;
 }
 .session:hover {
-  background: rgba(167, 139, 250, 0.14);
+  background: var(--hover);
   border-color: var(--border);
+}
+.session:active {
+  transform: scale(0.99);
 }
 .session-summary {
   font-size: 12px;
@@ -236,13 +290,13 @@
   line-height: 1;
   padding: 2px 5px;
   border-radius: 999px;
-  color: var(--accent, #a78bfa);
-  background: rgba(167, 139, 250, 0.16);
-  border: 1px solid rgba(167, 139, 250, 0.35);
+  color: var(--accent);
+  background: var(--accent-weak);
+  border: 1px solid var(--accent-border);
   flex-shrink: 0;
 }
 .session.open {
-  border-left: 2px solid rgba(167, 139, 250, 0.55);
+  border-left: 2px solid var(--accent-ring);
 }
 /* Per-row delete, revealed on hover so it doesn't clutter the resting list. */
 .session-x {
@@ -266,9 +320,9 @@
   padding: 5px 8px;
   font-size: 12px;
   color: var(--text);
-  background: var(--bg, rgba(255, 255, 255, 0.04));
+  background: var(--surface-2);
   border: 1px solid var(--border);
-  border-radius: 7px;
+  border-radius: var(--r-sm);
   outline: none;
   flex-shrink: 0;
 }
@@ -276,5 +330,5 @@
   color: var(--muted);
 }
 .session-search:focus {
-  border-color: rgba(167, 139, 250, 0.5);
+  border-color: var(--accent-ring);
 }

@@ -8,11 +8,13 @@ import {
   LiveRect,
   LiveToolUse,
   PlanViewport,
+  Preset,
   Project,
   Terminal,
   TermStatus,
 } from "../../types";
 import { ToolManifest } from "../../lib/tools";
+import { isAgentStartup } from "../../lib/agents";
 import { TermSlot } from "../terminals/termDock";
 import "../tools/live.css";
 
@@ -23,12 +25,16 @@ export type LiveProps = {
   activity: Record<string, string>;
   liveTool: Record<string, LiveToolUse>;
   manifests: Record<string, ToolManifest>;
+  /** 전역 프리셋 목록 — 프레임 헤더에서 프로젝트별로 실행 */
+  presets: Preset[];
   liveCanvas?: LiveCanvas;
   onPlaceFrames: (frames: Record<string, LiveRect>) => void;
   onRemoveFrame: (projectId: string) => void;
   onMoveNode: (termId: string, rect: LiveRect) => void;
   onSetCanvasView: (view: PlanViewport) => void;
   onSetSideW: (w: number) => void;
+  /** 자동정렬 토글 — 켜지면 노드 크기 조절·세션 추가 시 프레임 내부를 격자로 재정렬 */
+  onSetAutoArrange: (on: boolean) => void;
   /** 메인 레일에서 선택한 프로젝트 — 캔버스에서 해당 프레임을 배치·중앙 정렬한다 */
   focusPid?: string | null;
   onNewSession: (projectId: string) => void;
@@ -43,6 +49,8 @@ export type LiveProps = {
   onJumpTerm: (projectId: string, termId: string) => void;
   /** 세션이 구동한 라이브 툴 노드를 수동으로 닫기 */
   onDismissLiveTool: (termId: string) => void;
+  /** 프리셋 실행 — ai 프리셋은 termId(프레임의 대상 세션)로 보낸다 */
+  onRunPreset: (projectId: string, presetId: string, termId?: string) => void;
 };
 
 const STATUS_LABEL: Record<TermStatus, string> = {
@@ -52,8 +60,8 @@ const STATUS_LABEL: Record<TermStatus, string> = {
   stopped: "종료",
 };
 
-/** 셸 세션 판별: startup이 claude로 시작하지 않으면 순수 셸(빈 startup 포함). */
-const isShellTerm = (t: Terminal) => !t.startup.trim().startsWith("claude");
+/** 셸 세션 판별: 알려진 코딩 에이전트(claude/codex)로 시작하지 않으면 순수 셸. */
+const isShellTerm = (t: Terminal) => !isAgentStartup(t.startup);
 
 // canvas geometry (world units). Session nodes and frames carry a user-resized
 // w/h (persisted); absent = these defaults, and a frame never shrinks below its
@@ -68,6 +76,9 @@ const NODE_MAX_H = 800;
 const TOOL_W = 280;
 const EDGE_W = 30;
 const ROW_GAP = 16;
+// breathing room from the frame's top-left so a freshly-spawned node doesn't
+// stick flush into the corner (absolutely-placed rows ignore the body padding)
+const NODE_INSET = 16;
 const FRAME_PAD = 14;
 const FRAME_HEAD = 44;
 const FRAME_MIN_W = 320;
@@ -92,6 +103,17 @@ type Pos = { x: number; y: number };
  */
 export default function LiveView(p: LiveProps) {
   const { projects, terminals, statuses, liveTool, manifests, liveCanvas } = p;
+
+  // which frame's preset dropdown is open (projectId), if any
+  const [presetMenu, setPresetMenu] = useState<string | null>(null);
+  useEffect(() => {
+    if (!presetMenu) return;
+    // clicks inside the menu stopPropagation on mousedown, so any bubbling
+    // mousedown here is an outside click → dismiss.
+    const close = () => setPresetMenu(null);
+    window.addEventListener("mousedown", close);
+    return () => window.removeEventListener("mousedown", close);
+  }, [presetMenu]);
 
   // 1s tick for elapsed clocks
   const [now, setNow] = useState(() => Date.now());
@@ -138,12 +160,11 @@ export default function LiveView(p: LiveProps) {
     if (initRef.current || storedFrames !== undefined) return;
     initRef.current = true;
     const auto: Record<string, LiveRect> = {};
-    let i = 0;
-    for (const pr of projects) {
-      if ((liveTermsOf[pr.id] ?? []).length === 0) continue;
-      auto[pr.id] = { x: 40 + (i % 2) * 780, y: 40 + Math.floor(i / 2) * 480 };
-      i++;
-    }
+    const live = projects.filter((pr) => (liveTermsOf[pr.id] ?? []).length > 0);
+    const rows = Math.max(1, Math.ceil(Math.sqrt(live.length))); // 세로 우선 격자
+    live.forEach((pr, i) => {
+      auto[pr.id] = { x: 40 + Math.floor(i / rows) * 780, y: 40 + (i % rows) * 480 };
+    });
     p.onPlaceFrames(auto); // materialize (possibly {}) so this runs once ever
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [storedFrames]);
@@ -163,7 +184,12 @@ export default function LiveView(p: LiveProps) {
   const nodeRect = (termId: string, index: number): LiveRect => {
     const g = ghostRef.current;
     if (g?.kind === "node" && g.id === termId) return g.rect;
-    return liveCanvas?.nodes?.[termId] ?? { x: 0, y: index * (NODE_H + ROW_GAP) };
+    return (
+      liveCanvas?.nodes?.[termId] ?? {
+        x: NODE_INSET,
+        y: NODE_INSET + index * (NODE_H + ROW_GAP),
+      }
+    );
   };
   const nodeSize = (r: LiveRect) => ({
     w: Math.min(NODE_MAX_W, Math.max(NODE_MIN_W, r.w ?? NODE_W)),
@@ -348,12 +374,13 @@ export default function LiveView(p: LiveProps) {
   // ---- 정렬 (auto-arrange) ----
   const ARRANGE_GAP = 40;
   // 프로젝트간 정렬: 배치된 프레임들을 프로젝트 순서대로 좌상단부터 격자로 재배치.
+  // 세로 우선(column-major)으로 채운다 — 2개면 위아래로 쌓이고, 그 다음 열로 넘어간다.
   const arrangeFrames = () => {
     const ordered = projects.filter((pr) => storedFrames?.[pr.id]).map((pr) => pr.id);
     if (ordered.length === 0) return;
-    const cols = Math.ceil(Math.sqrt(ordered.length));
+    const rows = Math.ceil(Math.sqrt(ordered.length));
     const next: Record<string, LiveRect> = {};
-    let x = 40, y = 40, rowH = 0;
+    let x = 40, y = 40, colW = 0;
     let maxX = 40, maxY = 40;
     ordered.forEach((pid, i) => {
       const g = frameGeom(pid);
@@ -361,13 +388,13 @@ export default function LiveView(p: LiveProps) {
       next[pid] = { x, y, w: st?.w, h: st?.h }; // keep any user-resized w/h
       maxX = Math.max(maxX, x + g.w);
       maxY = Math.max(maxY, y + g.h);
-      rowH = Math.max(rowH, g.h);
-      if ((i + 1) % cols === 0) {
-        x = 40;
-        y += rowH + ARRANGE_GAP;
-        rowH = 0;
+      colW = Math.max(colW, g.w);
+      if ((i + 1) % rows === 0) {
+        y = 40;
+        x += colW + ARRANGE_GAP;
+        colW = 0;
       } else {
-        x += g.w + ARRANGE_GAP;
+        y += g.h + ARRANGE_GAP;
       }
     });
     p.onPlaceFrames(next);
@@ -379,7 +406,7 @@ export default function LiveView(p: LiveProps) {
     const terms = liveTermsOf[pid] ?? [];
     if (terms.length === 0) return;
     const cols = Math.ceil(Math.sqrt(terms.length));
-    let x = 0, y = 0, rowH = 0;
+    let x = NODE_INSET, y = NODE_INSET, rowH = 0;
     terms.forEach((t, i) => {
       const cur = liveCanvas?.nodes?.[t.id];
       const s = nodeSize(cur ?? { x: 0, y: 0 });
@@ -387,7 +414,7 @@ export default function LiveView(p: LiveProps) {
       p.onMoveNode(t.id, { x, y, w: cur?.w, h: cur?.h });
       rowH = Math.max(rowH, s.h);
       if ((i + 1) % cols === 0) {
-        x = 0;
+        x = NODE_INSET;
         y += rowH + ROW_GAP;
         rowH = 0;
       } else {
@@ -395,6 +422,37 @@ export default function LiveView(p: LiveProps) {
       }
     });
   };
+
+  // ---- auto-arrange: keep each frame's nodes in a tidy grid ----
+  // When on, re-flow a frame's session nodes whenever a node is resized or a
+  // session/tool is added/removed. The signature captures only node *sizes* and
+  // membership (not positions), so arrangeNodesIn's position writes don't feed
+  // back and retrigger — it converges after one pass.
+  const autoArrange = liveCanvas?.autoArrange ?? false;
+  const arrangeSig = autoArrange
+    ? placedIds
+        .map((pid) => {
+          const terms = liveTermsOf[pid] ?? [];
+          return (
+            pid +
+            ":" +
+            terms
+              .map((t) => {
+                const r = liveCanvas?.nodes?.[t.id];
+                return `${t.id}@${r?.w ?? NODE_W}x${r?.h ?? NODE_H}${liveTool[t.id] ? "T" : ""}`;
+              })
+              .join(",")
+          );
+        })
+        .join("|")
+    : "";
+  const arrangeNodesRef = useRef(arrangeNodesIn);
+  arrangeNodesRef.current = arrangeNodesIn;
+  useEffect(() => {
+    if (!autoArrange) return;
+    for (const pid of placedIds) arrangeNodesRef.current(pid);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [arrangeSig, autoArrange]);
 
   // place a project's frame near the current view center if it isn't already up
   const ensurePlaced = (pid: string) => {
@@ -492,6 +550,42 @@ export default function LiveView(p: LiveProps) {
                   <span className="lv2-frame-name">{pr.name}</span>
                   {terms.length > 0 && <span className="lv2-frame-count">세션 {terms.length}</span>}
                   <span className="lv2-frame-spacer" />
+                  <div className="lv2-preset-wrap" onMouseDown={(e) => e.stopPropagation()}>
+                    <button
+                      className={`lv2-frame-btn ${presetMenu === pid ? "on" : ""}`}
+                      onClick={() => setPresetMenu(presetMenu === pid ? null : pid)}
+                      title="이 프로젝트에서 프리셋 실행"
+                    >
+                      ⚡ 프리셋
+                    </button>
+                    {presetMenu === pid && (
+                      <div className="lv2-preset-menu">
+                        {p.presets.length === 0 ? (
+                          <div className="lv2-preset-empty">
+                            프리셋이 없어요 — 서랍의 프리셋에서 추가하세요
+                          </div>
+                        ) : (
+                          p.presets.map((ps) => (
+                            <button
+                              key={ps.id}
+                              className="lv2-preset-item"
+                              onClick={() => {
+                                const target = terms.find((t) => !isShellTerm(t)) ?? terms[0];
+                                p.onRunPreset(pid, ps.id, target?.id);
+                                setPresetMenu(null);
+                              }}
+                              title={ps.desc}
+                            >
+                              <span className={`lv2-preset-kind ${ps.kind}`}>
+                                {ps.kind === "ai" ? "AI" : "CMD"}
+                              </span>
+                              <span className="lv2-preset-name">{ps.name}</span>
+                            </button>
+                          ))
+                        )}
+                      </div>
+                    )}
+                  </div>
                   {terms.length > 0 && (
                     <button
                       className="lv2-frame-btn"
@@ -551,6 +645,14 @@ export default function LiveView(p: LiveProps) {
                             title="드래그해서 배치"
                           >
                             <span className={`lv-dot ${st}`} />
+                            <button
+                              className="lv2-node-folder"
+                              onMouseDown={(e) => e.stopPropagation()}
+                              onClick={() => openPath(t.cwd ?? pr.path)}
+                              title="이 세션의 폴더 열기"
+                            >
+                              📁
+                            </button>
                             <span className="lv-node-title">{t.title}</span>
                             {isShellTerm(t) && <span className="lv-node-kind">셸</span>}
                             <span className={`lv-node-state ${st}`}>
@@ -621,6 +723,17 @@ export default function LiveView(p: LiveProps) {
               왼쪽 사이드바에서 프로젝트를 클릭하면 이 캔버스에 올라와요.
             </div>
           )}
+        </div>
+
+        {/* auto-arrange toggle (bottom-right, above the zoom bar) */}
+        <div className="lv2-autoarrange" onMouseDown={(e) => e.stopPropagation()}>
+          <button
+            className={`lv2-auto-btn ${autoArrange ? "on" : ""}`}
+            onClick={() => p.onSetAutoArrange(!autoArrange)}
+            title="켜면 노드 크기를 바꾸거나 세션·툴이 늘어날 때마다 프레임 안을 자동으로 격자 정렬합니다"
+          >
+            <span className="lv2-auto-dot" />⧉ 자동정렬 {autoArrange ? "켜짐" : "꺼짐"}
+          </button>
         </div>
 
         {/* zoom / fit controls */}

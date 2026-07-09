@@ -3,6 +3,7 @@ import NewTerminalMenu from "./NewTerminalMenu";
 import SplitLayout, { SplitCtx } from "./SplitLayout";
 import { TermSlot } from "./termDock";
 import { LayoutNode, Project, Terminal as Term, TermStatus } from "../../types";
+import { AgentKind } from "../../lib/agents";
 import { leaves } from "../../lib/layout";
 import { openPath } from "../../api/system";
 import "./terminals.css";
@@ -59,6 +60,7 @@ export default function ProjectView({
   presetsOpen,
   onTogglePresets,
   wtActive,
+  agent,
 }: {
   project: Project;
   terminals: Term[];
@@ -83,6 +85,8 @@ export default function ProjectView({
   presetsOpen: boolean;
   onTogglePresets: () => void;
   wtActive?: { done: number; total: number; active: number; error: number };
+  /** the active agent CLI — decides the "＋ 새 세션" button's label + command */
+  agent: AgentKind;
 }) {
   const stageRef = useRef<HTMLDivElement>(null);
   const [panes, setPanes] = useState<PaneRect[]>([]);
@@ -331,7 +335,7 @@ export default function ProjectView({
           <button className="tool" onClick={onOpenWeb} title="웹 AI 탭 (동시 전송)">
             웹
           </button>
-          <NewTerminalMenu onCreate={onNewTerm} />
+          <NewTerminalMenu onCreate={onNewTerm} agent={agent} />
         </div>
       </header>
 

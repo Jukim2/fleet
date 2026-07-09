@@ -1,13 +1,63 @@
 :root {
-  --bg: #0e0e11;
-  --rail: #161619;
-  --surface: #1b1b1f;
-  --border: #26262b;
-  --text: #ededf0;
-  --muted: #8b8b93;
-  --accent: #a78bfa;
-  --green: #4ade80;
-  --amber: #fbbf24;
+  /* ---- Base tokens (Slate, the default theme) ----
+     These are the first-paint values; applyTheme() in lib/themes.ts overwrites
+     them as inline props on <html> when a theme is selected. Every softer shade
+     below is DERIVED from these with color-mix, so it adapts per theme. */
+  --bg: #0b0f14;
+  --rail: #0e141b;
+  --surface: #121821;
+  --surface-2: #151c27;
+  --pane: #0e141c;
+  --elevated: #141b26;
+  --border: #1e2733;
+  --border-strong: #2a3648;
+  --text: #e6ebf2;
+  --muted: #8a94a6;
+  --accent: #3b82f6;
+  --accent-hover: #60a5fa;
+  --on-accent: #04080f;
+  --idle: #34d399;
+  --busy: #3b82f6;
+  --waiting: #f59e0b;
+  --danger: #f87171;
+  --term-bg: #0e141c;
+  --term-fg: #e6ebf2;
+  --term-cursor: #3b82f6;
+  --term-selection: #28344a;
+
+  /* Back-compat aliases for the old token names still referenced in places. */
+  --green: var(--idle);
+  --amber: var(--waiting);
+  --red: var(--danger);
+
+  /* ---- Derived shades (never set per theme) ---- */
+  --faint: color-mix(in srgb, var(--muted) 68%, transparent);
+  --hover: color-mix(in srgb, var(--text) 6%, transparent);
+  --hover-strong: color-mix(in srgb, var(--text) 11%, transparent);
+  --accent-weak: color-mix(in srgb, var(--accent) 14%, transparent);
+  --accent-soft: color-mix(in srgb, var(--accent) 24%, transparent);
+  --accent-border: color-mix(in srgb, var(--accent) 38%, transparent);
+  --accent-ring: color-mix(in srgb, var(--accent) 55%, transparent);
+  --idle-weak: color-mix(in srgb, var(--idle) 16%, transparent);
+  --busy-weak: color-mix(in srgb, var(--busy) 16%, transparent);
+  --waiting-weak: color-mix(in srgb, var(--waiting) 18%, transparent);
+  --danger-weak: color-mix(in srgb, var(--danger) 14%, transparent);
+
+  --scrollbar: color-mix(in srgb, var(--text) 18%, transparent);
+  --scrollbar-hover: color-mix(in srgb, var(--text) 32%, transparent);
+
+  /* Scrims/shadows are intentionally theme-independent (they darken whatever is
+     behind an overlay, in every theme). */
+  --scrim: rgba(0, 0, 0, 0.5);
+  --shadow-1: 0 1px 3px rgba(0, 0, 0, 0.28);
+  --shadow-2: 0 8px 24px rgba(0, 0, 0, 0.36);
+  --shadow-3: 0 20px 56px rgba(0, 0, 0, 0.48);
+
+  /* Radius scale — one consistent, restrained set (was a mix of 4–10px). */
+  --r-sm: 6px;
+  --r-md: 8px;
+  --r-lg: 11px;
+
   /* Apple-ish easing + durations, shared across every transition/animation. */
   --ease-out: cubic-bezier(0.22, 1, 0.36, 1); /* decel, used for entrances/glides */
   --ease-ios: cubic-bezier(0.32, 0.72, 0, 1); /* iOS sheet feel */
@@ -100,12 +150,12 @@ body {
   min-width: 28px;
   border-radius: 99px;
   border: 3px solid transparent;
-  background: #3a3a42;
+  background: var(--scrollbar);
   background-clip: padding-box;
   transition: background 0.15s;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: #555560;
+  background: var(--scrollbar-hover);
   background-clip: padding-box;
 }
 ::-webkit-scrollbar-thumb:active {
@@ -138,28 +188,32 @@ a {
 }
 
 .app {
-  /* Always three explicit tracks (closed side = 0px) so the track COUNT never
-     changes and grid-template-columns interpolates — the panels glide open. */
+  /* Always four explicit tracks (closed side = 0px) so the track COUNT never
+     changes and grid-template-columns interpolates — the panels glide open.
+     Each track's width is its own custom property, so the four toggles (rail,
+     web dock, drawer) compose without a rule per combination.
+     Order: rail | main | web-dock | drawer. */
   display: grid;
-  grid-template-columns: 0px 1fr 0px;
+  grid-template-columns: var(--rail-w, 0px) 1fr var(--dock-w, 0px) var(--drawer-w, 0px);
   height: 100vh;
   transition: grid-template-columns var(--dur) var(--ease-ios);
 }
 .app.rail-open {
-  grid-template-columns: 220px 1fr 0px;
+  --rail-w: 220px;
 }
 .app.drawer-open {
-  grid-template-columns: 0px 1fr 360px;
+  --drawer-w: 360px;
 }
-.app.rail-open.drawer-open {
-  grid-template-columns: 220px 1fr 360px;
+.app.webdock-open {
+  --dock-w: 460px;
 }
 
 /* Panels stay mounted and sit in overflow-clipped slots: as the track width
    animates, the fixed-width panel is revealed/hidden instead of popping. The
    fixed width also stops text from reflowing mid-animation. */
 .rail-slot,
-.drawer-slot {
+.drawer-slot,
+.webdock-slot {
   min-width: 0;
   overflow: hidden;
 }
@@ -179,16 +233,17 @@ a {
   color: var(--muted);
   width: 30px;
   height: 30px;
-  border-radius: 9px;
+  border-radius: var(--r-md);
   display: flex;
   align-items: center;
   justify-content: center;
   font-size: 15px;
-  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35);
+  box-shadow: var(--shadow-2);
 }
 .edge-toggle:hover {
   color: var(--text);
-  border-color: var(--accent);
+  border-color: var(--border-strong);
+  background: var(--surface-2);
 }
 .edge-toggle.left {
   left: 12px;
@@ -208,12 +263,12 @@ a {
   display: flex;
   gap: 2px;
   padding: 3px;
-  background: color-mix(in srgb, var(--bg) 78%, transparent);
-  backdrop-filter: blur(10px);
-  -webkit-backdrop-filter: blur(10px);
+  background: color-mix(in srgb, var(--elevated) 82%, transparent);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
   border: 1px solid var(--border);
-  border-radius: 10px;
-  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.28);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-1);
 }
 .stage-viewtab {
   border: none;
@@ -234,7 +289,7 @@ a {
   background: var(--surface);
   color: var(--text);
   font-weight: 600;
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.3);
+  box-shadow: var(--shadow-1);
 }
 /* Live command center rendered directly in the stage (no longer a plan tab) */
 .live-stage {
@@ -260,13 +315,13 @@ a {
 }
 .primary {
   background: var(--accent);
-  color: #1a1024;
+  color: var(--on-accent);
   border: none;
-  border-radius: 9px;
+  border-radius: var(--r-md);
   padding: 9px 16px;
   font-weight: 600;
   font-size: 13px;
 }
 .primary:hover {
-  filter: brightness(1.07);
+  background: var(--accent-hover);
 }

@@ -8,6 +8,7 @@ export type Diagnostics = {
   home: string;
   configPath: string;
   claudeProjectsDir: string;
+  codexSessionsDir: string;
   hookPort: number;
   hookInstalled: boolean;
 };

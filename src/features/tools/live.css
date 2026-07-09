@@ -239,6 +239,52 @@
   box-shadow: 0 6px 20px rgba(0, 0, 0, 0.3);
 }
 
+/* auto-arrange toggle — sits just above the zoom bar, bottom-right */
+.lv2-autoarrange {
+  position: absolute;
+  right: 14px;
+  bottom: 58px;
+}
+.lv2-auto-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  color: var(--muted);
+  border-radius: 10px;
+  padding: 6px 11px;
+  font-size: 11.5px;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.3);
+  transition:
+    color var(--dur-fast) var(--ease-out),
+    border-color var(--dur-fast) var(--ease-out),
+    background var(--dur-fast) var(--ease-out);
+}
+.lv2-auto-btn:hover {
+  color: var(--text);
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+}
+.lv2-auto-btn.on {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
+  background: color-mix(in srgb, var(--accent) 12%, var(--surface));
+}
+.lv2-auto-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: var(--muted);
+  transition: background var(--dur-fast) var(--ease-out);
+}
+.lv2-auto-btn.on .lv2-auto-dot {
+  background: var(--accent);
+  box-shadow: 0 0 6px color-mix(in srgb, var(--accent) 70%, transparent);
+}
+
 /* project frame — a dashed "big container" the sessions live inside */
 .lv2-frame {
   position: absolute;
@@ -298,8 +344,98 @@
   border-color: var(--accent);
 }
 .lv2-frame-btn.x:hover {
-  color: #f87171;
-  border-color: #f87171;
+  color: var(--danger);
+  border-color: var(--danger);
+}
+.lv2-frame-btn.on {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+/* preset dropdown in the frame header */
+.lv2-preset-wrap {
+  position: relative;
+}
+.lv2-preset-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 20;
+  min-width: 200px;
+  max-height: 320px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.4);
+  animation: fleet-pop-in var(--dur-fast) var(--ease-out);
+}
+.lv2-preset-empty {
+  font-size: 11.5px;
+  color: var(--muted);
+  padding: 8px 6px;
+  white-space: normal;
+  line-height: 1.4;
+}
+.lv2-preset-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  background: none;
+  border: none;
+  border-radius: 7px;
+  color: var(--text);
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease-out);
+}
+.lv2-preset-item:hover {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+.lv2-preset-kind {
+  flex: 0 0 auto;
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.4px;
+  border-radius: 5px;
+  padding: 2px 5px;
+}
+.lv2-preset-kind.ai {
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+}
+.lv2-preset-kind.code {
+  color: var(--muted);
+  background: color-mix(in srgb, var(--muted) 16%, transparent);
+}
+.lv2-preset-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* folder-open button on a session node (left of its title) */
+.lv2-node-folder {
+  flex: 0 0 auto;
+  background: none;
+  border: none;
+  padding: 0 2px;
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0.75;
+  transition: opacity var(--dur-fast) var(--ease-out);
+}
+.lv2-node-folder:hover {
+  opacity: 1;
 }
 .lv2-frame-body {
   position: relative;
@@ -435,12 +571,12 @@ button.lv-node:hover {
   border: 1px solid var(--border);
   border-radius: 8px;
   overflow: hidden;
-  background: #101014; /* xterm 테마 배경과 일치 */
+  background: var(--pane); /* xterm 테마 배경과 일치 */
 }
 
 .lv2-node-btn.x:hover {
-  color: #f87171;
-  border-color: #f87171;
+  color: var(--danger);
+  border-color: var(--danger);
 }
 
 /* 세션 목록 행 — 사이드바 하단(잠든 탭 불러오기 + 지난 대화 이어하기) */
@@ -507,7 +643,7 @@ button.lv-node:hover {
     opacity var(--dur-fast) var(--ease-out);
 }
 .lv2-sess-x:hover {
-  color: #f87171;
+  color: var(--danger);
   opacity: 1;
 }
 
@@ -578,7 +714,7 @@ button.lv-node:hover {
   border-color: color-mix(in srgb, var(--green) 40%, var(--border));
 }
 .lv-node.tool.job.error {
-  border-color: rgba(248, 113, 113, 0.5);
+  border-color: color-mix(in srgb, var(--danger) 50%, transparent);
 }
 .lv-tool-head {
   display: flex;
@@ -608,7 +744,7 @@ button.lv-node:hover {
     opacity var(--dur-fast) var(--ease-out);
 }
 .lv-tool-x:hover {
-  color: #f87171;
+  color: var(--danger);
   opacity: 1;
 }
 /* representative before → after pair (big) */
@@ -627,7 +763,7 @@ button.lv-node:hover {
   border: 1px solid var(--border);
   border-radius: 8px;
   overflow: hidden;
-  background: #101014;
+  background: var(--pane);
   cursor: pointer;
   transition: border-color var(--dur-fast) var(--ease-out);
 }
@@ -673,7 +809,7 @@ button.lv-node:hover {
   border: 1px solid var(--border);
   border-radius: 6px;
   overflow: hidden;
-  background: #101014;
+  background: var(--pane);
   cursor: pointer;
   transition: border-color var(--dur-fast) var(--ease-out);
 }
@@ -750,7 +886,7 @@ button.lv-node:hover {
   transition: width 0.4s var(--ease-out);
 }
 .lv-job-fill.err {
-  background: #f87171;
+  background: var(--danger);
 }
 .lv-job-fill.indet {
   width: 40%;
@@ -772,6 +908,6 @@ button.lv-node:hover {
     border-color var(--dur-fast) var(--ease-out);
 }
 .lv-job-x:hover {
-  color: #f87171;
-  border-color: #f87171;
+  color: var(--danger);
+  border-color: var(--danger);
 }

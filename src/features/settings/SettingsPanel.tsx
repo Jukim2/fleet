@@ -1,7 +1,9 @@
 import { useEffect, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { Project } from "../../types";
+import { AgentKind, AgentSpec } from "../../lib/agents";
 import { ToolManifest } from "../../lib/tools";
+import { THEME_LIST, ThemeId, themeSwatch } from "../../lib/themes";
 import {
   appDiagnostics,
   checkForUpdate,
@@ -25,9 +27,29 @@ export default function SettingsPanel({
   onScanTools,
   onRegisterToolViaAI,
   onCloseAfterAction,
+  agent,
+  agents,
+  onSetAgent,
+  customAgentIds,
+  onAddCustomAgent,
+  onRemoveCustomAgent,
+  theme,
+  onSetTheme,
 }: {
   onClose: () => void;
   projects: Project[];
+  /** the active coding-agent id (global) */
+  agent: AgentKind;
+  /** every registered agent (built-in + connected manifests) */
+  agents: AgentSpec[];
+  onSetAgent: (agent: AgentKind) => void;
+  /** ids of user-connected (removable) agents */
+  customAgentIds: string[];
+  onAddCustomAgent: (root: string) => Promise<boolean>;
+  onRemoveCustomAgent: (agentId: string) => void;
+  /** selected UI theme id + setter */
+  theme: string;
+  onSetTheme: (id: ThemeId) => void;
   onRelink: (projectId: string) => void;
   onReinstallHooks: () => Promise<void>;
   manifests: Record<string, ToolManifest>;
@@ -43,7 +65,7 @@ export default function SettingsPanel({
   const [exists, setExists] = useState<Record<string, boolean>>({});
   const [reinstalling, setReinstalling] = useState(false);
   const [rootExists, setRootExists] = useState<Record<string, boolean>>({});
-  const [tab, setTab] = useState<"general" | "tools">("general");
+  const [tab, setTab] = useState<"general" | "appearance" | "tools">("general");
   const [found, setFound] = useState<{ root: string; name: string; id: string }[]>([]);
 
   // Update state
@@ -74,6 +96,16 @@ export default function SettingsPanel({
       (entries) => setRootExists(Object.fromEntries(entries)),
     );
   }, [toolRoots]);
+
+  /** connect a coding agent by picking a folder holding fleet-agent.json */
+  const connectAgent = async () => {
+    const picked = await open({
+      directory: true,
+      multiple: false,
+      title: "에이전트 폴더 선택 (fleet-agent.json 포함)",
+    });
+    if (picked && typeof picked === "string") await onAddCustomAgent(picked);
+  };
 
   /** connect a new tool by picking its fleet-tool.json folder */
   const connectTool = async () => {
@@ -167,6 +199,12 @@ export default function SettingsPanel({
             일반 · 진단
           </button>
           <button
+            className={`settings-tab ${tab === "appearance" ? "on" : ""}`}
+            onClick={() => setTab("appearance")}
+          >
+            테마
+          </button>
+          <button
             className={`settings-tab ${tab === "tools" ? "on" : ""}`}
             onClick={() => setTab("tools")}
           >
@@ -178,6 +216,54 @@ export default function SettingsPanel({
         </div>
 
         <div className="settings-body" style={{ display: tab === "general" ? "block" : "none" }}>
+          {/* Active agent CLI + connected agent manifests */}
+          <section className="settings-sec">
+            <h3>코딩 에이전트</h3>
+            <p className="set-note">
+              새 세션·리줌 목록·상태 감지가 선택한 에이전트를 따릅니다. 이미 열려 있는 터미널은 원래
+              실행한 CLI를 그대로 유지해요. 새 에이전트는 <code>fleet-agent.json</code> 매니페스트만
+              추가하면 코드 수정 없이 연결됩니다.
+            </p>
+            <div className="set-row" style={{ gap: 8, flexWrap: "wrap" }}>
+              {agents.map((a) => (
+                <button
+                  key={a.id}
+                  className={agent === a.id ? "primary" : "btn"}
+                  onClick={() => onSetAgent(a.id)}
+                  title={
+                    a.statusMode === "hooks"
+                      ? "상태: Claude Code hook"
+                      : a.statusMode === "rollout"
+                        ? "상태: 세션 이벤트 로그(구조화)"
+                        : "상태: 화면 스캔"
+                  }
+                >
+                  {a.label}
+                  {customAgentIds.includes(a.id) && (
+                    <span
+                      title="연결 해제"
+                      style={{ marginLeft: 6, opacity: 0.6 }}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onRemoveCustomAgent(a.id);
+                      }}
+                    >
+                      ✕
+                    </span>
+                  )}
+                </button>
+              ))}
+              <button className="btn" onClick={connectAgent} title="fleet-agent.json 폴더 연결">
+                ＋ 에이전트
+              </button>
+            </div>
+            <p className="set-note">
+              상태 감지 방식 — <b>Claude</b>: Code hook. <b>Codex</b>: 세션 이벤트 로그(rollout)를 읽어
+              작업 중/대기/승인을 구조적으로 파악(화면 스캔 아님 → 언어·버전에 안 깨짐). 그 외 매니페스트
+              에이전트는 매니페스트가 지정한 방식(hook/로그/화면)을 씁니다.
+            </p>
+          </section>
+
           {/* Update */}
           <section className="settings-sec">
             <h3>업데이트</h3>
@@ -238,9 +324,13 @@ export default function SettingsPanel({
               <span className="set-key">Claude 세션</span>
               <span className="set-val mono">{diag?.claudeProjectsDir || "-"}</span>
             </div>
+            <div className="set-row">
+              <span className="set-key">Codex 세션</span>
+              <span className="set-val mono">{diag?.codexSessionsDir || "-"}</span>
+            </div>
           </section>
 
-          {/* Hooks */}
+          {/* Hooks (Claude only) */}
           <section className="settings-sec">
             <h3>Claude 연동 (hook)</h3>
             <div className="set-row">
@@ -261,7 +351,8 @@ export default function SettingsPanel({
               </button>
             </div>
             <p className="set-note">
-              설치 후 새로 여는 Claude 터미널부터 상태·알림이 적용됩니다.
+              설치 후 새로 여는 Claude 터미널부터 상태·알림이 적용됩니다. (Codex는 이 hook을 쓰지 않고
+              세션 이벤트 로그로 상태를 파악하므로 별도 설치가 필요 없어요.)
             </p>
           </section>
 
@@ -294,6 +385,54 @@ export default function SettingsPanel({
                 </div>
               );
             })}
+          </section>
+        </div>
+
+        {/* ---- Appearance tab: theme picker ---- */}
+        <div
+          className="settings-body"
+          style={{ display: tab === "appearance" ? "block" : "none" }}
+        >
+          <section className="settings-sec">
+            <h3>테마</h3>
+            <p className="set-note">
+              전체 UI 색상과 터미널 색을 함께 바꿉니다. 선택은 바로 적용되고 저장돼요.
+            </p>
+            <div className="theme-grid">
+              {THEME_LIST.map((t) => {
+                const sw = themeSwatch(t.id);
+                const on = (theme || "slate") === t.id;
+                return (
+                  <button
+                    key={t.id}
+                    className={`theme-card ${on ? "on" : ""}`}
+                    onClick={() => onSetTheme(t.id)}
+                    title={t.name}
+                    aria-pressed={on}
+                  >
+                    <div
+                      className="theme-preview"
+                      style={{ background: sw.bg, borderColor: sw.surface }}
+                    >
+                      <span className="theme-bar" style={{ background: sw.surface }}>
+                        <i style={{ background: sw.accent }} />
+                        <i style={{ background: sw.idle }} />
+                        <i style={{ background: sw.waiting }} />
+                      </span>
+                      <span className="theme-lines">
+                        <em style={{ background: sw.text }} />
+                        <em style={{ background: sw.accent, width: "40%" }} />
+                      </span>
+                    </div>
+                    <div className="theme-name">
+                      {t.name}
+                      <span className="theme-group">{t.group === "light" ? "라이트" : "다크"}</span>
+                      {on && <span className="theme-check">✓</span>}
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
           </section>
         </div>
 

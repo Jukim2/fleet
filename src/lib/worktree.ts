@@ -4,6 +4,7 @@
 // useFleet; these are the shapes + the pure builder.
 import { Plan } from "../types";
 import { ClaudeEffort } from "./plan";
+import { AgentKind } from "./agents";
 
 export type WtPhase =
   | "pending" // waiting on deps / a free merge slot
@@ -55,8 +56,9 @@ export type WtRun = {
   branch: string; // integration branch (fleet/plan-XXXX)
   integDir: string; // integration worktree path
   steps: WtStep[];
-  auto: boolean; // launch sessions with --dangerously-skip-permissions
-  effort?: ClaudeEffort; // reasoning effort for step sessions (--effort)
+  agent: AgentKind; // which agent CLI runs the step sessions
+  auto: boolean; // launch sessions in hands-free (skip-approval) mode
+  effort?: ClaudeEffort; // reasoning effort for step sessions
   log?: WtLogEntry[]; // activity timeline (which branch merged when, conflicts, errors)
   startedAt?: number; // when the run was created (epoch ms)
 };
@@ -80,6 +82,7 @@ export function buildWtRun(
   stepIds: string[],
   auto: boolean,
   slug: string,
+  agent: AgentKind,
   effort?: ClaudeEffort,
 ): WtRun {
   const cwd = cwdRaw.replace(/\\/g, "/").replace(/\/+$/, "");
@@ -101,6 +104,7 @@ export function buildWtRun(
     branch: `fleet/plan-${slug}`,
     integDir: `${wtRoot}/_integ-${slug}`,
     steps,
+    agent,
     auto,
     effort,
     log: [],

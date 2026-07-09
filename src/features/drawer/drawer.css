@@ -25,7 +25,7 @@
   border-radius: 7px;
 }
 .drawer-tabs > button.on {
-  background: rgba(167, 139, 250, 0.16);
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
   color: var(--text);
 }
 .drawer-x {
@@ -164,7 +164,7 @@
 }
 .form .add {
   background: var(--accent);
-  color: #1a1024;
+  color: var(--on-accent);
   border: none;
   border-radius: 7px;
   padding: 7px;

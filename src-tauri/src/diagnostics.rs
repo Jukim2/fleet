@@ -13,6 +13,7 @@ pub struct Diagnostics {
     home: String,
     config_path: String,
     claude_projects_dir: String,
+    codex_sessions_dir: String,
     hook_port: u16,
     hook_installed: bool,
 }
@@ -34,11 +35,21 @@ pub fn app_diagnostics(app: AppHandle) -> Diagnostics {
             .to_string_lossy()
             .to_string()
     };
+    let codex_sessions_dir = if home.is_empty() {
+        String::new()
+    } else {
+        std::path::Path::new(&home)
+            .join(".codex")
+            .join("sessions")
+            .to_string_lossy()
+            .to_string()
+    };
     Diagnostics {
         version,
         home,
         config_path,
         claude_projects_dir,
+        codex_sessions_dir,
         hook_port: HOOK_PORT,
         hook_installed: hook_is_installed(),
     }
